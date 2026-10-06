@@ -27,7 +27,7 @@ public class BookingJpaEntity {
     private UUID groupId;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false)
+    @Column(name = "status", nullable = false, length = 20)
     private BookingStatus status;
 
     @Column(name = "pin_hash")

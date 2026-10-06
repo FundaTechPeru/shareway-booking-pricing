@@ -1,6 +1,8 @@
 package com.fundatechperu.shareway.bookingpricing;
 
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -14,6 +16,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 class SharewayBookingPricingApplicationTests {
 
+    @Autowired
+    private Flyway flyway;
+
     @Container
     @ServiceConnection
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17-alpine")
@@ -22,7 +27,8 @@ class SharewayBookingPricingApplicationTests {
             .withPassword("test-password");
 
     @Test
-    void contextLoads() {
+    void contextLoadsWithFlywayAndHibernateValidation() {
+        org.junit.jupiter.api.Assertions.assertEquals("5", flyway.info().current().getVersion().toString());
     }
 
 }

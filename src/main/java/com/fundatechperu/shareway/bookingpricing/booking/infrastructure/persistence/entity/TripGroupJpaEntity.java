@@ -21,7 +21,7 @@ public class TripGroupJpaEntity {
     private int minPassengers;
     @Column(name = "available_seats", nullable = false)
     private int availableSeats;
-    @Column(nullable = false)
+    @Column(nullable = false, length = 20)
     private String status;
     @Version
     @Column(nullable = false)
