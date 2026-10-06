@@ -5,5 +5,5 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 public interface PaymentGateway {
-    Payment authorize(UUID bookingId, BigDecimal amount);
+    Payment authorize(UUID bookingId, UUID payerId, BigDecimal amount);
 }

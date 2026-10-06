@@ -9,9 +9,9 @@ Backend microservice for booking shared trips, reserving seats with optimistic l
 - PostgreSQL on `localhost:5432`
 - Database `shareway-booking-pricing`
 
-Set `DB_PASSWORD` in IntelliJ under **Run Configuration -> Environment variables**. The supported variables are `DB_URL`, `DB_USER`, `DB_PASSWORD`, and `PRICING_PLATFORM_FEE_PERCENT`; `.env.example` contains safe placeholders.
+Set `DB_PASSWORD` and `JWT_SECRET` in IntelliJ under **Run Configuration -> Environment variables**. `JWT_SECRET` must contain at least 32 bytes. The supported variables are `DB_URL`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET`, and `PRICING_PLATFORM_FEE_PERCENT`; `.env.example` contains safe placeholders.
 
-The application uses Flyway migrations and `spring.jpa.hibernate.ddl-auto=validate`. On an empty database, startup applies `V1__create_booking_tables.sql` and `V2__create_pricing_tables.sql`.
+The application uses Flyway migrations and `spring.jpa.hibernate.ddl-auto=validate`. On an empty database, startup applies migrations V1 through V4. `trip_groups.departure_at`, `zone`, and `estimated_distance_km` are provisional values until Driver Operations & Routing supplies them.
 
 ## Local database reset
 
@@ -34,8 +34,25 @@ The same script can be run from an IntelliJ PostgreSQL console. It is never exec
 - `GET /api/v1/pricing/fare-rules/{id}` retrieves a rule.
 - `PUT /api/v1/pricing/fare-rules/{id}` updates a rule.
 - `GET /api/v1/pricing/fares/estimate?zone=&date=&distanceKm=&passengers=` calculates a fare.
+- `POST /api/v1/pricing/payments` authorizes a payment using the current group fare.
+- `GET /api/v1/pricing/payments/{paymentId}` retrieves a payment.
 - Swagger UI: `/swagger-ui.html`
 - OpenAPI document: `/v3/api-docs`
+
+Authenticated endpoints require a JWT with `sub` as UUID and a `role` claim (`passenger`, `driver`, or `admin`). Fare-rule management is restricted to administrators; booking creation requires a passenger; fare estimates require any authenticated role.
+
+## Saga flow
+
+```mermaid
+sequenceDiagram
+    Passenger->>Booking: Create reservation
+    Booking-->>Pricing: PaymentAuthorizationRequested
+    Pricing->>PaymentProvider: Authorize current fare
+    Pricing-->>Booking: PaymentAuthorized or PaymentRejected
+    Booking-->>Pricing: BookingConfirmed / BookingCancelled
+```
+
+Events currently use in-memory Spring publication. They are lost if the application stops during processing; a durable Event Bus with retries and an Outbox is pending.
 
 ## Tests
 
@@ -45,4 +62,4 @@ Run the verification suite with:
 ./mvnw -q verify
 ```
 
-Payments, Saga/domain events, Circuit Breaker, and JWT authentication remain future integration work. Payment persistence/domain ports are intentionally not exposed as REST endpoints yet.
+Domain events currently use in-memory Spring publication and are lost if the application stops during processing. A durable event bus with retries and an Outbox remains future work. Saga orchestration, Circuit Breaker, notification delivery, and payment REST integration remain pending.

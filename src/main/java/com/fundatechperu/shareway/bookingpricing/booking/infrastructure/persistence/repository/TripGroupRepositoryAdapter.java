@@ -31,11 +31,15 @@ public class TripGroupRepositoryAdapter implements TripGroupRepository {
         entity.setStatus(group.getStatus());
         entity.setVersion(group.getVersion());
         entity.setCreatedAt(group.getCreatedAt());
+        entity.setDepartureAt(group.getDepartureAt());
+        entity.setZone(group.getZone());
+        entity.setEstimatedDistanceKm(group.getEstimatedDistanceKm());
         return toDomain(repository.save(entity));
     }
 
     private TripGroup toDomain(TripGroupJpaEntity entity) {
         return TripGroup.restore(entity.getGroupId(), entity.getCapacity(), entity.getMinPassengers(),
-                entity.getAvailableSeats(), entity.getStatus(), entity.getVersion(), entity.getCreatedAt());
+                entity.getAvailableSeats(), entity.getStatus(), entity.getVersion(), entity.getCreatedAt(),
+                entity.getDepartureAt(), entity.getZone(), entity.getEstimatedDistanceKm());
     }
 }

@@ -4,6 +4,8 @@ import com.fundatechperu.shareway.bookingpricing.booking.domain.exception.*;
 import com.fundatechperu.shareway.bookingpricing.pricing.domain.exception.FareNotFoundException;
 import com.fundatechperu.shareway.bookingpricing.pricing.domain.exception.InvalidFareException;
 import com.fundatechperu.shareway.bookingpricing.pricing.domain.exception.InvalidFareRuleException;
+import com.fundatechperu.shareway.bookingpricing.pricing.domain.exception.InvalidPaymentTransitionException;
+import com.fundatechperu.shareway.bookingpricing.pricing.domain.exception.PaymentProviderUnavailableException;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -29,10 +31,15 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler({BookingAlreadyExistsException.class, NoSeatsAvailableException.class,
             InvalidBookingTransitionException.class, TripGroupNotFoundException.class,
+            ConcurrentReservationException.class, InvalidPaymentTransitionException.class,
             InvalidFareException.class, InvalidFareRuleException.class, DataIntegrityViolationException.class,
             ObjectOptimisticLockingFailureException.class})
     public ResponseEntity<ErrorResponse> conflict(Exception exception) {
         return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+    @ExceptionHandler(PaymentProviderUnavailableException.class)
+    public ResponseEntity<ErrorResponse> paymentUnavailable(PaymentProviderUnavailableException exception) {
+        return response(HttpStatus.SERVICE_UNAVAILABLE, "PAYMENT_PROVIDER_UNAVAILABLE");
     }
 
     @ExceptionHandler(Exception.class)

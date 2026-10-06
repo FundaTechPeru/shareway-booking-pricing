@@ -10,6 +10,8 @@ import java.util.UUID;
 public class PaymentJpaEntity {
     @Id @Column(name = "payment_id", nullable = false) private UUID paymentId;
     @Column(name = "booking_id", nullable = false) private UUID bookingId;
+    @Column(name = "payer_id", nullable = false)
+    private UUID payerId;
     @Column(nullable = false, precision = 10, scale = 2) private BigDecimal amount;
     @Column(nullable = false, length = 3) private String currency;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) private PaymentStatus status;
@@ -19,6 +21,7 @@ public class PaymentJpaEntity {
     @Version @Column(nullable = false) private Long version;
     public UUID getPaymentId() { return paymentId; } public void setPaymentId(UUID v) { paymentId = v; }
     public UUID getBookingId() { return bookingId; } public void setBookingId(UUID v) { bookingId = v; }
+    public UUID getPayerId() { return payerId; } public void setPayerId(UUID v) { payerId = v; }
     public BigDecimal getAmount() { return amount; } public void setAmount(BigDecimal v) { amount = v; }
     public String getCurrency() { return currency; } public void setCurrency(String v) { currency = v; }
     public PaymentStatus getStatus() { return status; } public void setStatus(PaymentStatus v) { status = v; }

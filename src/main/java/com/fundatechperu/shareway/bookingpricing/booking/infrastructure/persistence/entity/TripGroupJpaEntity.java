@@ -28,6 +28,12 @@ public class TripGroupJpaEntity {
     private Long version;
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
+    @Column(name = "departure_at")
+    private LocalDateTime departureAt;
+    @Column(length = 120)
+    private String zone;
+    @Column(name = "estimated_distance_km", precision = 10, scale = 2)
+    private java.math.BigDecimal estimatedDistanceKm;
 
     public UUID getGroupId() { return groupId; }
     public void setGroupId(UUID groupId) { this.groupId = groupId; }
@@ -43,4 +49,10 @@ public class TripGroupJpaEntity {
     public void setVersion(Long version) { this.version = version; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public LocalDateTime getDepartureAt() { return departureAt; }
+    public void setDepartureAt(LocalDateTime departureAt) { this.departureAt = departureAt; }
+    public String getZone() { return zone; }
+    public void setZone(String zone) { this.zone = zone; }
+    public java.math.BigDecimal getEstimatedDistanceKm() { return estimatedDistanceKm; }
+    public void setEstimatedDistanceKm(java.math.BigDecimal estimatedDistanceKm) { this.estimatedDistanceKm = estimatedDistanceKm; }
 }

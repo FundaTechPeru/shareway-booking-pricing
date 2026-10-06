@@ -42,6 +42,8 @@ public class BookingJpaEntity {
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
+    @Column(name = "payment_authorized_at")
+    private LocalDateTime paymentAuthorizedAt;
 
     public BookingJpaEntity() {
     }
@@ -109,4 +111,6 @@ public class BookingJpaEntity {
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
     }
+    public LocalDateTime getPaymentAuthorizedAt() { return paymentAuthorizedAt; }
+    public void setPaymentAuthorizedAt(LocalDateTime paymentAuthorizedAt) { this.paymentAuthorizedAt = paymentAuthorizedAt; }
 }

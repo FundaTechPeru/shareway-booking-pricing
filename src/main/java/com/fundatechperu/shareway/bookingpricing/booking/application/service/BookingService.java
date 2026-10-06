@@ -2,75 +2,77 @@ package com.fundatechperu.shareway.bookingpricing.booking.application.service;
 
 import com.fundatechperu.shareway.bookingpricing.booking.application.dto.request.CreateBookingRequest;
 import com.fundatechperu.shareway.bookingpricing.booking.application.dto.response.BookingResponse;
-import com.fundatechperu.shareway.bookingpricing.booking.domain.exception.BookingAlreadyExistsException;
-import com.fundatechperu.shareway.bookingpricing.booking.domain.exception.InvalidBookingRequestException;
-import com.fundatechperu.shareway.bookingpricing.booking.domain.exception.TripGroupNotFoundException;
-import com.fundatechperu.shareway.bookingpricing.booking.domain.exception.TripRequestNotFoundException;
+import com.fundatechperu.shareway.bookingpricing.booking.domain.exception.*;
 import com.fundatechperu.shareway.bookingpricing.booking.domain.model.Booking;
 import com.fundatechperu.shareway.bookingpricing.booking.domain.model.TripGroup;
-import com.fundatechperu.shareway.bookingpricing.booking.domain.repository.BookingRepository;
-import com.fundatechperu.shareway.bookingpricing.booking.domain.repository.TripGroupRepository;
-import com.fundatechperu.shareway.bookingpricing.booking.domain.repository.TripRequestRepository;
-import org.springframework.dao.DataIntegrityViolationException;
+import com.fundatechperu.shareway.bookingpricing.booking.domain.repository.*;
+import com.fundatechperu.shareway.bookingpricing.booking.domain.service.CancellationPolicy;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.UUID;
 
 @Service
 public class BookingService {
+    private final BookingTransactionalService transactionalService;
     private final BookingRepository bookingRepository;
     private final TripGroupRepository tripGroupRepository;
-    private final TripRequestRepository tripRequestRepository;
-
-    public BookingService(BookingRepository bookingRepository, TripGroupRepository tripGroupRepository,
-                          TripRequestRepository tripRequestRepository) {
-        this.bookingRepository = bookingRepository;
-        this.tripGroupRepository = tripGroupRepository;
-        this.tripRequestRepository = tripRequestRepository;
+    private final int maxAttempts;
+    private final long backoffMs;
+    private final CancellationPolicy cancellationPolicy;
+    private final Clock clock;
+    public BookingService(BookingTransactionalService transactionalService, BookingRepository bookingRepository,
+                          TripGroupRepository tripGroupRepository,
+                          @Value("${booking.reservation.max-attempts:3}") int maxAttempts,
+                          @Value("${booking.reservation.backoff-ms:20}") long backoffMs,
+                          CancellationPolicy cancellationPolicy, Clock clock) {
+        this.transactionalService = transactionalService; this.bookingRepository = bookingRepository;
+        this.tripGroupRepository = tripGroupRepository; this.maxAttempts = maxAttempts; this.backoffMs = backoffMs;
+        this.cancellationPolicy = cancellationPolicy; this.clock = clock;
     }
-
-    @Transactional
     public BookingResponse createBooking(CreateBookingRequest request) {
-        if (request == null || request.getRequestId() == null || request.getGroupId() == null) {
+        if (request == null || request.getRequestId() == null || request.getGroupId() == null)
             throw new InvalidBookingRequestException("requestId and groupId are required");
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try { return transactionalService.createOnce(request); }
+            catch (ObjectOptimisticLockingFailureException | CannotAcquireLockException exception) {
+                transactionalService.incrementRetry();
+                if (attempt == maxAttempts) {
+                    TripGroup current = tripGroupRepository.findById(request.getGroupId())
+                            .orElseThrow(() -> new TripGroupNotFoundException(request.getGroupId()));
+                    if (current.getAvailableSeats() == 0) throw new NoSeatsAvailableException();
+                    throw new ConcurrentReservationException();
+                }
+                try { Thread.sleep(backoffMs + (long) (Math.random() * 10)); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new ConcurrentReservationException(); }
+            }
         }
-        UUID requestId = request.getRequestId();
-        if (!tripRequestRepository.existsById(requestId)) {
-            throw new TripRequestNotFoundException(requestId);
-        }
-        if (bookingRepository.existsByRequestId(requestId)) {
-            throw new BookingAlreadyExistsException("A booking already exists for requestId " + requestId);
-        }
-        TripGroup group = tripGroupRepository.findById(request.getGroupId())
-                .orElseThrow(() -> new TripGroupNotFoundException(request.getGroupId()));
-        group.reserveSeat();
-        tripGroupRepository.save(group);
-        try {
-            return BookingResponse.from(bookingRepository.save(Booking.create(requestId, request.getGroupId())));
-        } catch (DataIntegrityViolationException exception) {
-            throw new BookingAlreadyExistsException("A booking already exists for requestId " + requestId);
-        }
+        throw new ConcurrentReservationException();
     }
-
     @Transactional(readOnly = true)
     public BookingResponse findById(UUID bookingId) {
-        return bookingRepository.findById(bookingId)
-                .map(BookingResponse::from)
+        return bookingRepository.findById(bookingId).map(BookingResponse::from)
                 .orElseThrow(() -> new IllegalArgumentException("Booking not found: " + bookingId));
     }
-
     public record CancellationResponse(BookingResponse booking, boolean penaltyApplicable) {}
-
     @Transactional
     public CancellationResponse cancel(UUID bookingId) {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new IllegalArgumentException("Booking not found: " + bookingId));
         TripGroup group = tripGroupRepository.findById(booking.getGroupId())
                 .orElseThrow(() -> new TripGroupNotFoundException(booking.getGroupId()));
-        booking.cancel();
-        group.releaseSeat();
-        tripGroupRepository.save(group);
-        return new CancellationResponse(BookingResponse.from(bookingRepository.save(booking)), false);
+        boolean applicable = group.getDepartureAt() != null
+                && cancellationPolicy.isPenaltyApplicable(clock.instant(),
+                group.getDepartureAt().atZone(ZoneId.of("UTC")).toInstant());
+        if (booking.getStatus() != com.fundatechperu.shareway.bookingpricing.booking.domain.model.BookingStatus.CANCELLED) {
+            booking.cancel(); group.releaseSeat(); tripGroupRepository.save(group);
+            bookingRepository.save(booking);
+        }
+        return new CancellationResponse(BookingResponse.from(booking), applicable);
     }
 }
