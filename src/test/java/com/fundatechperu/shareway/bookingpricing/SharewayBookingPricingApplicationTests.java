@@ -5,14 +5,13 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-@SpringBootTest(properties = {
-        "JWT_SECRET=test-secret-that-is-at-least-32-bytes-long",
-        "spring.datasource.url=jdbc:postgresql://localhost:5432/shareway-booking-pricing"
-})
+@SpringBootTest
+@ActiveProfiles("test")
 @Testcontainers
 class SharewayBookingPricingApplicationTests {
 

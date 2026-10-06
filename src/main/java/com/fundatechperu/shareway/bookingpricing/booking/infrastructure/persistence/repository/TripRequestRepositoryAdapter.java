@@ -4,6 +4,7 @@ import com.fundatechperu.shareway.bookingpricing.booking.domain.repository.TripR
 import org.springframework.stereotype.Repository;
 
 import java.util.UUID;
+import java.util.Optional;
 
 @Repository
 public class TripRequestRepositoryAdapter implements TripRequestRepository {
@@ -16,5 +17,10 @@ public class TripRequestRepositoryAdapter implements TripRequestRepository {
     @Override
     public boolean existsById(UUID requestId) {
         return repository.existsById(requestId);
+    }
+
+    @Override
+    public Optional<UUID> findPassengerIdById(UUID requestId) {
+        return repository.findPassengerIdById(requestId);
     }
 }

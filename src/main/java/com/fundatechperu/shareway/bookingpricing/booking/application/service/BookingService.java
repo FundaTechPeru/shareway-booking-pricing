@@ -22,17 +22,20 @@ public class BookingService {
     private final BookingTransactionalService transactionalService;
     private final BookingRepository bookingRepository;
     private final TripGroupRepository tripGroupRepository;
+    private final TripRequestRepository tripRequestRepository;
     private final int maxAttempts;
     private final long backoffMs;
     private final CancellationPolicy cancellationPolicy;
     private final Clock clock;
     public BookingService(BookingTransactionalService transactionalService, BookingRepository bookingRepository,
                           TripGroupRepository tripGroupRepository,
+                          TripRequestRepository tripRequestRepository,
                           @Value("${booking.reservation.max-attempts:3}") int maxAttempts,
                           @Value("${booking.reservation.backoff-ms:20}") long backoffMs,
                           CancellationPolicy cancellationPolicy, Clock clock) {
         this.transactionalService = transactionalService; this.bookingRepository = bookingRepository;
         this.tripGroupRepository = tripGroupRepository; this.maxAttempts = maxAttempts; this.backoffMs = backoffMs;
+        this.tripRequestRepository = tripRequestRepository;
         this.cancellationPolicy = cancellationPolicy; this.clock = clock;
     }
     public BookingResponse createBooking(CreateBookingRequest request) {
@@ -59,6 +62,17 @@ public class BookingService {
         return bookingRepository.findById(bookingId).map(BookingResponse::from)
                 .orElseThrow(() -> new IllegalArgumentException("Booking not found: " + bookingId));
     }
+
+    @Transactional(readOnly = true)
+    public BookingResponse findById(UUID bookingId, UUID actorId, boolean admin) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new IllegalArgumentException("Booking not found: " + bookingId));
+        if (!admin && !tripRequestRepository.findPassengerIdById(booking.getRequestId())
+                .filter(actorId::equals).isPresent()) {
+            throw new IllegalArgumentException("Booking not found: " + bookingId);
+        }
+        return BookingResponse.from(booking);
+    }
     public record CancellationResponse(BookingResponse booking, boolean penaltyApplicable) {}
     @Transactional
     public CancellationResponse cancel(UUID bookingId) {
@@ -74,5 +88,16 @@ public class BookingService {
             bookingRepository.save(booking);
         }
         return new CancellationResponse(BookingResponse.from(booking), applicable);
+    }
+
+    @Transactional
+    public CancellationResponse cancel(UUID bookingId, UUID actorId, boolean admin) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new IllegalArgumentException("Booking not found: " + bookingId));
+        if (!admin && !tripRequestRepository.findPassengerIdById(booking.getRequestId())
+                .filter(actorId::equals).isPresent()) {
+            throw new IllegalArgumentException("Booking not found: " + bookingId);
+        }
+        return cancel(bookingId);
     }
 }

@@ -14,6 +14,11 @@ public class TripRequestJpaEntity {
     @Column(name = "request_id", nullable = false)
     private UUID requestId;
 
+    @Column(name = "passenger_id", nullable = false)
+    private UUID passengerId;
+
     public UUID getRequestId() { return requestId; }
     public void setRequestId(UUID requestId) { this.requestId = requestId; }
+    public UUID getPassengerId() { return passengerId; }
+    public void setPassengerId(UUID passengerId) { this.passengerId = passengerId; }
 }

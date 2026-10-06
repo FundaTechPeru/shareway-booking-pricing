@@ -5,6 +5,8 @@ import com.fundatechperu.shareway.bookingpricing.booking.application.dto.respons
 import com.fundatechperu.shareway.bookingpricing.booking.application.service.BookingService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
@@ -26,12 +28,23 @@ public class BookingController {
     }
 
     @GetMapping("/{bookingId}")
-    public ResponseEntity<BookingResponse> findById(@PathVariable UUID bookingId) {
-        return ResponseEntity.ok(bookingService.findById(bookingId));
+    public ResponseEntity<BookingResponse> findById(@PathVariable UUID bookingId,
+                                                    Authentication authentication) {
+        return ResponseEntity.ok(bookingService.findById(bookingId, subjectId(authentication), isAdmin(authentication)));
     }
 
     @PostMapping("/{bookingId}/cancel")
-    public ResponseEntity<BookingService.CancellationResponse> cancel(@PathVariable UUID bookingId) {
-        return ResponseEntity.ok(bookingService.cancel(bookingId));
+    public ResponseEntity<BookingService.CancellationResponse> cancel(@PathVariable UUID bookingId,
+                                                                        Authentication authentication) {
+        return ResponseEntity.ok(bookingService.cancel(bookingId, subjectId(authentication), isAdmin(authentication)));
+    }
+
+    private UUID subjectId(Authentication authentication) {
+        return UUID.fromString(((Jwt) authentication.getPrincipal()).getSubject());
+    }
+
+    private boolean isAdmin(Authentication authentication) {
+        return authentication.getAuthorities().stream()
+                .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
     }
 }

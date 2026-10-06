@@ -7,11 +7,23 @@ Backend microservice for booking shared trips, reserving seats with optimistic l
 - Java 25
 - Maven Wrapper
 - PostgreSQL on `localhost:5432`
-- Database `shareway-booking-pricing`
+- Development database `shareway-booking-pricing`
 
 Set `DB_PASSWORD` and `JWT_SECRET` in IntelliJ under **Run Configuration -> Environment variables**. `JWT_SECRET` must contain at least 32 bytes. The supported variables are `DB_URL`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET`, and `PRICING_PLATFORM_FEE_PERCENT`; `.env.example` contains safe placeholders.
 
-The application uses Flyway migrations and `spring.jpa.hibernate.ddl-auto=validate`. On an empty database, startup applies migrations V1 through V4. `trip_groups.departure_at`, `zone`, and `estimated_distance_km` are provisional values until Driver Operations & Routing supplies them.
+The application uses Flyway migrations and `spring.jpa.hibernate.ddl-auto=validate`. On an empty database, startup applies migrations V1 through V5. `trip_groups.departure_at`, `zone`, and `estimated_distance_km` are provisional values until Driver Operations & Routing supplies them.
+
+For integration tests, install and start Docker Desktop, then run `./mvnw -q verify`; Testcontainers starts an isolated PostgreSQL container and does not use the development database. On Windows, Docker Desktop must be running before launching Maven.
+
+As an optional alternative, the `local-test` profile points only to the separate `shareway-booking-pricing-test` database:
+
+```powershell
+$env:DB_TEST_PASSWORD = "your-local-test-password"
+$env:JWT_SECRET = "your-development-secret-with-at-least-32-bytes"
+./mvnw.cmd -q spring-boot:run "-Dspring-boot.run.profiles=local-test"
+```
+
+Create that database separately before use. Never set `DB_TEST_URL` or `DB_URL` to `shareway-booking-pricing` when using this profile.
 
 ## Local database reset
 
