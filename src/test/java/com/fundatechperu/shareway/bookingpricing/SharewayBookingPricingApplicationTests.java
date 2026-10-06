@@ -7,7 +7,10 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-@SpringBootTest
+@SpringBootTest(properties = {
+        "JWT_SECRET=test-secret-that-is-at-least-32-bytes-long",
+        "spring.datasource.url=jdbc:postgresql://localhost:5432/shareway-booking-pricing"
+})
 @Testcontainers
 class SharewayBookingPricingApplicationTests {
 
