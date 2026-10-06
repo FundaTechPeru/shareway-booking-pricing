@@ -13,17 +13,26 @@ Set `DB_PASSWORD` and `JWT_SECRET` in IntelliJ under **Run Configuration -> Envi
 
 The application uses Flyway migrations and `spring.jpa.hibernate.ddl-auto=validate`. On an empty database, startup applies migrations V1 through V5. `trip_groups.departure_at`, `zone`, and `estimated_distance_km` are provisional values until Driver Operations & Routing supplies them.
 
-For integration tests, install and start Docker Desktop, then run `./mvnw -q verify`; Testcontainers starts an isolated PostgreSQL container and does not use the development database. On Windows, Docker Desktop must be running before launching Maven.
+## Integration-test database
 
-As an optional alternative, the `local-test` profile points only to the separate `shareway-booking-pricing-test` database:
+Integration tests use local PostgreSQL only, never the development database. Create the separate test database once:
 
 ```powershell
-$env:DB_TEST_PASSWORD = "your-local-test-password"
-$env:JWT_SECRET = "your-development-secret-with-at-least-32-bytes"
-./mvnw.cmd -q spring-boot:run "-Dspring-boot.run.profiles=local-test"
+psql -h localhost -p 5432 -U postgres -d postgres `
+  -c 'CREATE DATABASE "shareway-booking-pricing-test";'
 ```
 
-Create that database separately before use. Never set `DB_TEST_URL` or `DB_URL` to `shareway-booking-pricing` when using this profile.
+Define `DB_PASSWORD` for the development application. Define `TEST_DB_PASSWORD` as well when the test database uses a different password. Tests accept `TEST_DB_URL` and `TEST_DB_USER`, but the safe default is `jdbc:postgresql://localhost:5432/shareway-booking-pricing-test`. The test profile configures a 30-connection Hikari pool and aborts if the URL does not point to `localhost` and a database ending in `-test`.
+
+Run the full suite from a terminal:
+
+```powershell
+$env:DB_PASSWORD = "your-development-password"
+$env:TEST_DB_PASSWORD = "your-test-password"
+./mvnw.cmd -q verify
+```
+
+In IntelliJ, open the test Run Configuration, set the same environment variables (`DB_PASSWORD`, `TEST_DB_PASSWORD`, and optionally `TEST_DB_URL`/`TEST_DB_USER`), and run the tests. Do not point test variables to `shareway-booking-pricing`.
 
 ## Local database reset
 
@@ -68,7 +77,7 @@ Events currently use in-memory Spring publication. They are lost if the applicat
 
 ## Tests
 
-Run the verification suite with:
+Run the verification suite with local PostgreSQL:
 
 ```bash
 ./mvnw -q verify
