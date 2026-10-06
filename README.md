@@ -9,7 +9,9 @@ Backend microservice for booking shared trips, reserving seats with optimistic l
 - PostgreSQL on `localhost:5432`
 - Development database `shareway-booking-pricing`
 
-Set `DB_PASSWORD` and `JWT_SECRET` in IntelliJ under **Run Configuration -> Environment variables**. `JWT_SECRET` must contain at least 32 bytes. The supported variables are `DB_URL`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET`, and `PRICING_PLATFORM_FEE_PERCENT`; `.env.example` contains safe placeholders.
+The application imports an optional local `.env` file from the project directory. Copy `.env.example` to `.env` and set `DB_PASSWORD` plus a random `JWT_SECRET` of at least 32 bytes. `.env` is ignored by Git and must never be committed. Environment variables supplied by the process still work and take precedence when provided.
+
+For IntelliJ, either configure `DB_PASSWORD` and `JWT_SECRET` under **Run Configuration -> Environment variables**, or keep them in the local `.env` file. The supported variables are `DB_URL`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET`, and `PRICING_PLATFORM_FEE_PERCENT`.
 
 The application uses Flyway migrations and `spring.jpa.hibernate.ddl-auto=validate`. On an empty database, startup applies migrations V1 through V5. `trip_groups.departure_at`, `zone`, and `estimated_distance_km` are provisional values until Driver Operations & Routing supplies them.
 
