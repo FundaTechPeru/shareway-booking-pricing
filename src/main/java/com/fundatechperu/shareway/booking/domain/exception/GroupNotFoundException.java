@@ -1,0 +1,9 @@
+package com.fundatechperu.shareway.booking.domain.exception;
+
+import java.util.UUID;
+
+public class GroupNotFoundException extends RuntimeException {
+    public GroupNotFoundException(UUID groupId) {
+        super("Group not found: " + groupId);
+    }
+}

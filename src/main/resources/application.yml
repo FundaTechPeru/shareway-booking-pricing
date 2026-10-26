@@ -1,0 +1,57 @@
+# Base configuration, shared by every profile. Nothing environment-specific lives here:
+# DB_URL, DB_USER, DB_PASSWORD and SERVER_PORT are read from environment variables with no
+# default value. Only application-dev.yml supplies local defaults; application-prod.yml keeps
+# the cloud values coming exclusively from the environment.
+spring:
+  application:
+    name: shareway-booking-pricing
+
+  datasource:
+    url: "${DB_URL}"
+    username: "${DB_USER}"
+    password: "${DB_PASSWORD}"
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+    clean-disabled: true
+
+server:
+  port: "${SERVER_PORT}"
+
+# Actuator: only health and info are exposed, with liveness/readiness probes enabled
+# (/actuator/health/liveness and /actuator/health/readiness). Details stay hidden.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health,info"
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+info:
+  app:
+    name: ShareWay Booking & Pricing
+    description: Booking, seats, booking saga, fare rules and penalties service.
+
+booking:
+  reservation:
+    max-attempts: "${BOOKING_RESERVATION_MAX_ATTEMPTS:3}"
+    backoff-ms: "${BOOKING_RESERVATION_BACKOFF_MS:20}"
+  cancellation:
+    penalty-window-minutes: "${BOOKING_CANCELLATION_PENALTY_WINDOW_MINUTES:30}"
+  saga:
+    payment-timeout-minutes: "${BOOKING_SAGA_PAYMENT_TIMEOUT_MINUTES:15}"
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
