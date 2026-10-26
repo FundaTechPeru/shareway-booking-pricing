@@ -11,6 +11,9 @@ public final class SagaStep {
     /** Payment authorized: waiting for the trip group to complete. */
     public static final String WAIT_GROUP = "WAIT_GROUP";
 
+    /** Group completed: waiting for a driver to accept the proposal. */
+    public static final String SEARCH_DRIVER = "SEARCH_DRIVER";
+
     private SagaStep() {
     }
 }

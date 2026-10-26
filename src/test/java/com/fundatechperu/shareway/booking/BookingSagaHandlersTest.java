@@ -64,7 +64,7 @@ class BookingSagaHandlersTest {
     void paymentAuthorizedAdvancesTheSagaToWaitGroupAndKeepsItRunning() {
         when(bookingSagaRepository.findByBookingId(booking.getBookingId())).thenReturn(Optional.of(saga));
 
-        PaymentAuthorizedHandler handler = new PaymentAuthorizedHandler(bookingSagaRepository);
+        PaymentAuthorizedHandler handler = new PaymentAuthorizedHandler(bookingSagaRepository, FIXED_CLOCK, 60L);
         PaymentAuthorized event = new PaymentAuthorized(UUID.randomUUID(), FIXED_CLOCK.instant(),
                 booking.getBookingId(), UUID.randomUUID());
         assertTrue(handler.supports(event));
@@ -72,6 +72,8 @@ class BookingSagaHandlersTest {
 
         assertEquals(SagaStep.WAIT_GROUP, saga.getCurrentStep());
         assertEquals(BookingSaga.Status.RUNNING, saga.getStatus());
+        assertEquals(java.time.LocalDateTime.of(2026, 10, 25, 13, 0), saga.getDeadlineAt(),
+                "the group deadline must be now + 60 minutes");
         verify(bookingSagaRepository).save(saga);
     }
 
@@ -79,7 +81,7 @@ class BookingSagaHandlersTest {
     void paymentAuthorizedForUnknownBookingIsNotFound() {
         when(bookingSagaRepository.findByBookingId(any())).thenReturn(Optional.empty());
 
-        PaymentAuthorizedHandler handler = new PaymentAuthorizedHandler(bookingSagaRepository);
+        PaymentAuthorizedHandler handler = new PaymentAuthorizedHandler(bookingSagaRepository, FIXED_CLOCK, 60L);
         PaymentAuthorized event = new PaymentAuthorized(UUID.randomUUID(), FIXED_CLOCK.instant(),
                 booking.getBookingId(), UUID.randomUUID());
 
@@ -92,7 +94,7 @@ class BookingSagaHandlersTest {
         saga.compensate();
         when(bookingSagaRepository.findByBookingId(booking.getBookingId())).thenReturn(Optional.of(saga));
 
-        PaymentAuthorizedHandler handler = new PaymentAuthorizedHandler(bookingSagaRepository);
+        PaymentAuthorizedHandler handler = new PaymentAuthorizedHandler(bookingSagaRepository, FIXED_CLOCK, 60L);
         handler.onEvent(new PaymentAuthorized(UUID.randomUUID(), FIXED_CLOCK.instant(),
                 booking.getBookingId(), UUID.randomUUID()));
 

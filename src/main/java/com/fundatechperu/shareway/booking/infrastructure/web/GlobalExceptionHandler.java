@@ -3,7 +3,6 @@ package com.fundatechperu.shareway.booking.infrastructure.web;
 import com.fundatechperu.shareway.booking.domain.exception.*;
 import com.fundatechperu.shareway.booking.pricing.domain.exception.FareNotFoundException;
 import com.fundatechperu.shareway.booking.pricing.domain.exception.InvalidFareException;
-import com.fundatechperu.shareway.booking.pricing.domain.exception.InvalidFareRuleException;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -53,8 +52,8 @@ public class GlobalExceptionHandler {
 
     /** Conflicting state: no seats left, duplicate booking, invalid lifecycle transition (409). */
     @ExceptionHandler({BookingAlreadyExistsException.class, NoSeatsAvailableException.class,
-            InvalidBookingTransitionException.class,
-            InvalidFareException.class, InvalidFareRuleException.class, DataIntegrityViolationException.class,
+            InvalidBookingTransitionException.class, BookingCannotBeCancelledException.class,
+            InvalidFareException.class, DataIntegrityViolationException.class,
             ObjectOptimisticLockingFailureException.class})
     public ResponseEntity<ErrorResponse> conflict(Exception exception) {
         return response(HttpStatus.CONFLICT, exception.getMessage());

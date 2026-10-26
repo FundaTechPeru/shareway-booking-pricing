@@ -2,25 +2,19 @@ package com.fundatechperu.shareway.booking;
 
 import com.fundatechperu.shareway.booking.application.dto.request.CreateBookingRequest;
 import com.fundatechperu.shareway.booking.application.dto.response.BookingResponse;
+import com.fundatechperu.shareway.booking.application.dto.response.CancellationResponse;
 import com.fundatechperu.shareway.booking.application.service.BookingService;
 import com.fundatechperu.shareway.booking.application.service.BookingTransactionalService;
 import com.fundatechperu.shareway.booking.domain.exception.BookingNotFoundException;
 import com.fundatechperu.shareway.booking.domain.exception.InvalidBookingRequestException;
 import com.fundatechperu.shareway.booking.domain.exception.NoSeatsAvailableException;
-import com.fundatechperu.shareway.booking.domain.model.Booking;
 import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
-import com.fundatechperu.shareway.booking.domain.model.SeatInventory;
 import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
-import com.fundatechperu.shareway.booking.domain.repository.SeatInventoryRepository;
-import com.fundatechperu.shareway.booking.domain.service.CancellationPolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
-import java.time.Clock;
-import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -41,15 +35,12 @@ class BookingServiceTest {
 
     private final BookingTransactionalService transactionalService = mock(BookingTransactionalService.class);
     private final BookingRepository bookingRepository = mock(BookingRepository.class);
-    private final SeatInventoryRepository seatInventoryRepository = mock(SeatInventoryRepository.class);
 
     private BookingService service;
 
     @BeforeEach
     void setUp() {
-        service = new BookingService(transactionalService, bookingRepository, seatInventoryRepository,
-                3, 1, new CancellationPolicy(30),
-                Clock.fixed(Instant.parse("2026-10-25T12:00:00Z"), ZoneOffset.UTC));
+        service = new BookingService(transactionalService, bookingRepository, 3, 1);
     }
 
     private CreateBookingRequest request() {
@@ -129,42 +120,59 @@ class BookingServiceTest {
     // ------------------------------------------------------------------- cancel (X-User-Id)
 
     @Test
-    void cancelWithTheOwnerHeaderCancelsAndReleasesTheSeat() {
-        Booking booking = Booking.create(UUID.randomUUID(), GROUP_ID, PASSENGER_ID, null);
-        SeatInventory inventory = SeatInventory.restore(GROUP_ID, 4, 3, 1L, null);
-        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
-        when(seatInventoryRepository.findById(GROUP_ID)).thenReturn(Optional.of(inventory));
-        when(seatInventoryRepository.save(any(SeatInventory.class))).thenAnswer(i -> i.getArgument(0));
-        when(bookingRepository.save(any(Booking.class))).thenAnswer(i -> i.getArgument(0));
+    void cancelDelegatesToTheCancellationTransactionAndReturnsItsAnswer() {
+        CancellationResponse response = new CancellationResponse(
+                UUID.randomUUID(), BookingStatus.CANCELLED, null, null);
+        when(transactionalService.cancelOnce(any(), eq(PASSENGER_ID))).thenReturn(response);
 
-        BookingService.CancellationResponse response = service.cancel(booking.getBookingId(), PASSENGER_ID);
+        assertSame(response, service.cancel(response.bookingId(), PASSENGER_ID));
 
-        assertEquals(BookingStatus.CANCELLED, response.booking().status());
-        assertEquals(4, inventory.getAvailableSeats(), "the held seat must be released");
-        verify(bookingRepository).save(booking);
-        verify(seatInventoryRepository).save(inventory);
+        verify(transactionalService).cancelOnce(response.bookingId(), PASSENGER_ID);
+        verify(transactionalService, never()).incrementRetry();
     }
 
     @Test
-    void cancelFromAnotherPassengerIsNotFoundAndKeepsTheSeat() {
-        Booking booking = Booking.create(UUID.randomUUID(), GROUP_ID, PASSENGER_ID, null);
-        SeatInventory inventory = SeatInventory.restore(GROUP_ID, 4, 3, 1L, null);
-        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
-        when(seatInventoryRepository.findById(GROUP_ID)).thenReturn(Optional.of(inventory));
+    void cancelRetriesOptimisticLockFailuresUntilTheTransactionSucceeds() {
+        CancellationResponse response = new CancellationResponse(
+                UUID.randomUUID(), BookingStatus.CANCELLED, null, null);
+        when(transactionalService.cancelOnce(any(), eq(PASSENGER_ID)))
+                .thenThrow(new ObjectOptimisticLockingFailureException("seat_inventories", GROUP_ID))
+                .thenReturn(response);
 
-        assertThrows(BookingNotFoundException.class,
-                () -> service.cancel(booking.getBookingId(), UUID.randomUUID()));
+        assertSame(response, service.cancel(response.bookingId(), PASSENGER_ID));
 
-        assertEquals(BookingStatus.REQUESTED, booking.getStatus());
-        assertEquals(3, inventory.getAvailableSeats());
-        verify(bookingRepository, never()).save(any());
-        verify(seatInventoryRepository, never()).save(any());
+        verify(transactionalService, times(2)).cancelOnce(any(), eq(PASSENGER_ID));
+        verify(transactionalService, times(1)).incrementRetry();
+    }
+
+    @Test
+    void cancelRethrowsTheOptimisticFailureAfterExhaustingTheRetries() {
+        when(transactionalService.cancelOnce(any(), eq(PASSENGER_ID)))
+                .thenThrow(new ObjectOptimisticLockingFailureException("seat_inventories", GROUP_ID));
+
+        assertThrows(ObjectOptimisticLockingFailureException.class,
+                () -> service.cancel(UUID.randomUUID(), PASSENGER_ID));
+
+        verify(transactionalService, times(3)).cancelOnce(any(), eq(PASSENGER_ID));
+        verify(transactionalService, times(3)).incrementRetry();
+    }
+
+    @Test
+    void cancelFromAnotherPassengerIsNotFoundAndIsNotRetried() {
+        UUID bookingId = UUID.randomUUID();
+        when(transactionalService.cancelOnce(eq(bookingId), any()))
+                .thenThrow(new BookingNotFoundException(bookingId));
+
+        assertThrows(BookingNotFoundException.class, () -> service.cancel(bookingId, UUID.randomUUID()));
+
+        verify(transactionalService, times(1)).cancelOnce(eq(bookingId), any());
+        verify(transactionalService, never()).incrementRetry();
     }
 
     @Test
     void cancelWithoutXUserHeaderIsABadRequest() {
         assertThrows(InvalidBookingRequestException.class,
                 () -> service.cancel(UUID.randomUUID(), null));
-        verifyNoInteractions(bookingRepository, seatInventoryRepository);
+        verifyNoInteractions(transactionalService);
     }
 }

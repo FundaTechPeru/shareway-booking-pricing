@@ -22,6 +22,16 @@ public class SeatInventoryRepositoryAdapter implements SeatInventoryRepository {
         return repository.findById(groupId).map(this::toDomain);
     }
 
+    /**
+     * SELECT ... FOR UPDATE: cancellations and the timeout job serialize on the seat row of
+     * the group (Sprint 2). Without the row lock, many simultaneous cancellations of the
+     * same group exhaust the optimistic-lock retries of seat_inventories.version.
+     */
+    @Override
+    public Optional<SeatInventory> findByIdForUpdate(UUID groupId) {
+        return repository.findWithLockById(groupId).map(this::toDomain);
+    }
+
     @Override
     public SeatInventory save(SeatInventory inventory) {
         return toDomain(repository.save(toEntity(inventory)));

@@ -2,8 +2,11 @@ package com.fundatechperu.shareway.booking;
 
 import com.fundatechperu.shareway.booking.application.dto.request.CreateBookingRequest;
 import com.fundatechperu.shareway.booking.application.dto.response.BookingResponse;
+import com.fundatechperu.shareway.booking.application.dto.response.CancellationResponse;
 import com.fundatechperu.shareway.booking.application.service.BookingTransactionalService;
 import com.fundatechperu.shareway.booking.domain.exception.BookingAlreadyExistsException;
+import com.fundatechperu.shareway.booking.domain.exception.BookingCannotBeCancelledException;
+import com.fundatechperu.shareway.booking.domain.exception.BookingNotFoundException;
 import com.fundatechperu.shareway.booking.domain.exception.GroupNotFoundException;
 import com.fundatechperu.shareway.booking.domain.exception.NoSeatsAvailableException;
 import com.fundatechperu.shareway.booking.domain.model.Booking;
@@ -14,9 +17,15 @@ import com.fundatechperu.shareway.booking.domain.model.SeatInventory;
 import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
 import com.fundatechperu.shareway.booking.domain.repository.BookingSagaRepository;
 import com.fundatechperu.shareway.booking.domain.repository.SeatInventoryRepository;
+import com.fundatechperu.shareway.booking.domain.service.CancellationPolicy;
+import com.fundatechperu.shareway.booking.domain.service.DepartureTimeProvider;
 import com.fundatechperu.shareway.booking.pricing.application.service.FareService;
 import com.fundatechperu.shareway.booking.pricing.domain.model.Fare;
+import com.fundatechperu.shareway.booking.pricing.domain.model.Penalty;
+import com.fundatechperu.shareway.booking.pricing.domain.repository.FareRepository;
+import com.fundatechperu.shareway.booking.pricing.domain.repository.PenaltyRepository;
 import com.fundatechperu.shareway.booking.pricing.infrastructure.provider.FakeGroupInfoProvider;
+import com.fundatechperu.shareway.booking.shared.events.BookingCancelled;
 import com.fundatechperu.shareway.booking.shared.events.EventPublisher;
 import com.fundatechperu.shareway.booking.shared.events.PaymentAuthorizationRequested;
 import com.fundatechperu.shareway.booking.shared.events.SeatHeld;
@@ -58,14 +67,20 @@ class BookingTransactionalServiceTest {
     private final SeatInventoryRepository seatInventoryRepository = mock(SeatInventoryRepository.class);
     private final BookingSagaRepository bookingSagaRepository = mock(BookingSagaRepository.class);
     private final FareService fareService = mock(FareService.class);
+    private final FareRepository fareRepository = mock(FareRepository.class);
+    private final PenaltyRepository penaltyRepository = mock(PenaltyRepository.class);
+    private final DepartureTimeProvider departureTimeProvider = mock(DepartureTimeProvider.class);
     private final EventPublisher eventPublisher = mock(EventPublisher.class);
+    private final CancellationPolicy cancellationPolicy =
+            new CancellationPolicy(30, BigDecimal.valueOf(20), new BigDecimal("1.00"));
 
     private BookingTransactionalService service;
 
     @BeforeEach
     void setUp() {
         service = new BookingTransactionalService(bookingRepository, seatInventoryRepository,
-                bookingSagaRepository, fareService, new FakeGroupInfoProvider(), eventPublisher,
+                bookingSagaRepository, fareService, fareRepository, penaltyRepository, cancellationPolicy,
+                departureTimeProvider, new FakeGroupInfoProvider(), eventPublisher,
                 FIXED_CLOCK, PAYMENT_TIMEOUT_MINUTES, new SimpleMeterRegistry());
     }
 
@@ -162,5 +177,135 @@ class BookingTransactionalServiceTest {
         assertThrows(BookingAlreadyExistsException.class, () -> service.createOnce(request(), PASSENGER_ID, null));
         verify(seatInventoryRepository, never()).save(any());
         verifyNoInteractions(bookingSagaRepository, fareService, eventPublisher);
+    }
+
+    // ------------------------------------------------------------------------- cancelOnce
+
+    private Booking requestedBooking() {
+        return Booking.create(REQUEST_ID, GROUP_ID, PASSENGER_ID, "idem-key");
+    }
+
+    /** Booking REQUESTED, one of 4 seats held, saga running and an estimated fare of 21.34 PEN. */
+    private void cancellableBooking(Booking booking, SeatInventory inventory, BookingSaga saga) {
+        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
+        when(seatInventoryRepository.findByIdForUpdate(GROUP_ID)).thenReturn(Optional.of(inventory));
+        when(bookingSagaRepository.findByBookingId(booking.getBookingId())).thenReturn(Optional.of(saga));
+        when(fareRepository.findByBookingIdAndFareType(booking.getBookingId(), Fare.ESTIMATED))
+                .thenReturn(Optional.of(new Fare(UUID.randomUUID(), booking.getBookingId(), 1L,
+                        Fare.ESTIMATED, new BigDecimal("12"), 1, new BigDecimal("21.34"), "PEN")));
+    }
+
+    @Test
+    void cancelFromRequestedReleasesTheSeatCompensatesTheSagaAndPublishesBookingCancelled() {
+        Booking booking = requestedBooking();
+        SeatInventory inventory = SeatInventory.restore(GROUP_ID, 4, 3, 1L, null);
+        BookingSaga saga = BookingSaga.start(booking.getBookingId(), SagaStep.AUTHORIZE_PAYMENT,
+                LocalDateTime.of(2026, 10, 25, 12, 15));
+        cancellableBooking(booking, inventory, saga);
+        when(departureTimeProvider.departureAt(GROUP_ID))
+                .thenReturn(FIXED_CLOCK.instant().plus(java.time.Duration.ofMinutes(120)));
+
+        CancellationResponse response = service.cancelOnce(booking.getBookingId(), PASSENGER_ID);
+
+        assertEquals(BookingStatus.CANCELLED, response.status());
+        assertNull(response.penaltyAmount(), "a cancellation 120 min ahead must not be fined");
+        assertNull(response.currency());
+        assertEquals(BookingStatus.CANCELLED, booking.getStatus());
+        assertEquals(4, inventory.getAvailableSeats(), "the held seat must be released (+1)");
+        assertEquals(BookingSaga.Status.COMPENSATED, saga.getStatus());
+
+        ArgumentCaptor<Object> events = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher).publish(events.capture());
+        BookingCancelled cancelled = (BookingCancelled) events.getValue();
+        assertEquals(booking.getBookingId(), cancelled.bookingId());
+        assertFalse(cancelled.penaltyApplicable());
+
+        verify(penaltyRepository, never()).save(any());
+        verify(bookingRepository).save(booking);
+        verify(seatInventoryRepository).save(inventory);
+        verify(bookingSagaRepository).save(saga);
+    }
+
+    @Test
+    void lateCancellationCreatesTheTwentyPercentPenaltyWithAOneSolFloor() {
+        Booking booking = requestedBooking();
+        SeatInventory inventory = SeatInventory.restore(GROUP_ID, 4, 3, 1L, null);
+        BookingSaga saga = BookingSaga.start(booking.getBookingId(), SagaStep.WAIT_GROUP,
+                LocalDateTime.of(2026, 10, 25, 13, 0));
+        cancellableBooking(booking, inventory, saga);
+        when(departureTimeProvider.departureAt(GROUP_ID))
+                .thenReturn(FIXED_CLOCK.instant().plus(java.time.Duration.ofMinutes(10)));
+
+        CancellationResponse response = service.cancelOnce(booking.getBookingId(), PASSENGER_ID);
+
+        // 20 % of the estimated 21.34 = 4.268 -> 4.27 (HALF_UP), above the 1.00 floor
+        assertEquals(0, new BigDecimal("4.27").compareTo(response.penaltyAmount()));
+        assertEquals("PEN", response.currency());
+
+        ArgumentCaptor<Penalty> penalty = ArgumentCaptor.forClass(Penalty.class);
+        verify(penaltyRepository).save(penalty.capture());
+        assertEquals(booking.getBookingId(), penalty.getValue().bookingId());
+        assertEquals(Penalty.LATE_CANCELLATION, penalty.getValue().reason());
+        assertEquals(0, new BigDecimal("4.27").compareTo(penalty.getValue().amount()));
+
+        ArgumentCaptor<Object> events = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher).publish(events.capture());
+        assertTrue(((BookingCancelled) events.getValue()).penaltyApplicable());
+    }
+
+    @Test
+    void cancellingTwiceReleasesTheSeatOnlyOnceAndNeverChargesTwice() {
+        Booking booking = requestedBooking();
+        SeatInventory inventory = SeatInventory.restore(GROUP_ID, 4, 3, 1L, null);
+        BookingSaga saga = BookingSaga.start(booking.getBookingId(), SagaStep.WAIT_GROUP,
+                LocalDateTime.of(2026, 10, 25, 13, 0));
+        cancellableBooking(booking, inventory, saga);
+        when(departureTimeProvider.departureAt(GROUP_ID))
+                .thenReturn(FIXED_CLOCK.instant().plus(java.time.Duration.ofMinutes(10)));
+
+        CancellationResponse first = service.cancelOnce(booking.getBookingId(), PASSENGER_ID);
+        CancellationResponse second = service.cancelOnce(booking.getBookingId(), PASSENGER_ID);
+
+        assertEquals(BookingStatus.CANCELLED, first.status());
+        assertNotNull(first.penaltyAmount());
+        assertEquals(BookingStatus.CANCELLED, second.status());
+        assertNull(second.penaltyAmount(), "the idempotent answer must not charge a second penalty");
+
+        assertEquals(4, inventory.getAvailableSeats(), "available_seats must not go above capacity");
+        verify(seatInventoryRepository, times(1)).save(any());
+        verify(penaltyRepository, times(1)).save(any());
+        verify(eventPublisher, times(1)).publish(any());
+    }
+
+    @Test
+    void cancellingABoardedBookingIsAConflictThatTouchesNothing() {
+        Booking booking = Booking.restore(UUID.randomUUID(), REQUEST_ID, GROUP_ID, PASSENGER_ID, "idem-key",
+                BookingStatus.BOARDED, null, null, 1L, null);
+        SeatInventory inventory = SeatInventory.restore(GROUP_ID, 4, 3, 1L, null);
+        cancellableBooking(booking, inventory,
+                BookingSaga.restore(UUID.randomUUID(), booking.getBookingId(), SagaStep.SEARCH_DRIVER,
+                        BookingSaga.Status.COMPLETED, null, null));
+
+        assertThrows(BookingCannotBeCancelledException.class,
+                () -> service.cancelOnce(booking.getBookingId(), PASSENGER_ID));
+
+        assertEquals(BookingStatus.BOARDED, booking.getStatus());
+        assertEquals(3, inventory.getAvailableSeats());
+        verify(bookingRepository, never()).save(any());
+        verify(seatInventoryRepository, never()).save(any());
+        verifyNoInteractions(penaltyRepository, eventPublisher);
+    }
+
+    @Test
+    void cancellingAnUnknownOrForeignBookingIsNotFound() {
+        UUID bookingId = UUID.randomUUID();
+        when(bookingRepository.findById(bookingId)).thenReturn(Optional.empty());
+        assertThrows(BookingNotFoundException.class, () -> service.cancelOnce(bookingId, PASSENGER_ID));
+
+        Booking booking = requestedBooking();
+        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
+        assertThrows(BookingNotFoundException.class,
+                () -> service.cancelOnce(booking.getBookingId(), UUID.randomUUID()));
+        assertEquals(BookingStatus.REQUESTED, booking.getStatus());
     }
 }

@@ -2,7 +2,9 @@ package com.fundatechperu.shareway.booking;
 
 import com.fundatechperu.shareway.booking.application.dto.request.CreateBookingRequest;
 import com.fundatechperu.shareway.booking.application.dto.response.BookingResponse;
+import com.fundatechperu.shareway.booking.application.dto.response.CancellationResponse;
 import com.fundatechperu.shareway.booking.application.service.BookingService;
+import com.fundatechperu.shareway.booking.domain.exception.BookingCannotBeCancelledException;
 import com.fundatechperu.shareway.booking.domain.exception.BookingNotFoundException;
 import com.fundatechperu.shareway.booking.domain.exception.InvalidBookingRequestException;
 import com.fundatechperu.shareway.booking.domain.exception.NoSeatsAvailableException;
@@ -122,18 +124,49 @@ class BookingControllerTest {
     }
 
     @Test
-    void cancelWithTheOwnerHeaderReturns200() throws Exception {
+    void cancelWithTheOwnerHeaderReturns200WithoutPenalty() throws Exception {
         UUID bookingId = UUID.randomUUID();
-        BookingResponse cancelled = new BookingResponse(bookingId, BookingStatus.CANCELLED);
         when(bookingService.cancel(eq(bookingId), eq(PASSENGER_ID)))
-                .thenReturn(new BookingService.CancellationResponse(cancelled, false));
+                .thenReturn(new CancellationResponse(bookingId, BookingStatus.CANCELLED, null, null));
 
         mockMvc.perform(post("/bookings/" + bookingId + "/cancel")
                         .header("X-User-Id", PASSENGER_ID.toString()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.booking.bookingId").value(bookingId.toString()))
-                .andExpect(jsonPath("$.booking.status").value("CANCELLED"))
-                .andExpect(jsonPath("$.penaltyApplicable").value(false));
+                .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.penaltyAmount").isEmpty())
+                .andExpect(jsonPath("$.currency").isEmpty());
+    }
+
+    @Test
+    void lateCancelReportsThePenaltyAmountAndCurrency() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        when(bookingService.cancel(eq(bookingId), eq(PASSENGER_ID)))
+                .thenReturn(new CancellationResponse(bookingId, BookingStatus.CANCELLED,
+                        new java.math.BigDecimal("4.27"), "PEN"));
+
+        mockMvc.perform(post("/bookings/" + bookingId + "/cancel")
+                        .header("X-User-Id", PASSENGER_ID.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.penaltyAmount").value(4.27))
+                .andExpect(jsonPath("$.currency").value("PEN"));
+    }
+
+    @Test
+    void cancellingABoardedBookingIsA409() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        when(bookingService.cancel(eq(bookingId), eq(PASSENGER_ID)))
+                .thenThrow(new BookingCannotBeCancelledException(
+                        "La reserva ya no puede cancelarse en su estado actual: BOARDED"));
+
+        mockMvc.perform(post("/bookings/" + bookingId + "/cancel")
+                        .header("X-User-Id", PASSENGER_ID.toString()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.message")
+                        .value("La reserva ya no puede cancelarse en su estado actual: BOARDED"));
     }
 
     @Test

@@ -47,8 +47,16 @@ booking:
     backoff-ms: "${BOOKING_RESERVATION_BACKOFF_MS:20}"
   cancellation:
     penalty-window-minutes: "${BOOKING_CANCELLATION_PENALTY_WINDOW_MINUTES:30}"
+    penalty-percent: "${BOOKING_CANCELLATION_PENALTY_PERCENT:20}"
+    minimum-penalty-amount: "${BOOKING_CANCELLATION_MINIMUM_PENALTY_AMOUNT:1.00}"
   saga:
     payment-timeout-minutes: "${BOOKING_SAGA_PAYMENT_TIMEOUT_MINUTES:15}"
+    group-timeout-minutes: "${BOOKING_SAGA_GROUP_TIMEOUT_MINUTES:60}"
+    driver-timeout-minutes: "${BOOKING_SAGA_DRIVER_TIMEOUT_MINUTES:30}"
+    timeout-job-enabled: "${BOOKING_SAGA_TIMEOUT_JOB_ENABLED:true}"
+    timeout-job-cron: "${BOOKING_SAGA_TIMEOUT_JOB_CRON:0 * * * * *}"
+  departure:
+    simulated-offset-minutes: "${BOOKING_DEPARTURE_SIMULATED_OFFSET_MINUTES:120}"
 
 springdoc:
   swagger-ui:

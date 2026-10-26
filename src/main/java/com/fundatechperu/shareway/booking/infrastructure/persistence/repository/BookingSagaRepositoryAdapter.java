@@ -5,6 +5,8 @@ import com.fundatechperu.shareway.booking.domain.repository.BookingSagaRepositor
 import com.fundatechperu.shareway.booking.infrastructure.persistence.entity.BookingSagaJpaEntity;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -31,6 +33,12 @@ public class BookingSagaRepositoryAdapter implements BookingSagaRepository {
     @Override
     public BookingSaga save(BookingSaga saga) {
         return toDomain(repository.save(toEntity(saga)));
+    }
+
+    @Override
+    public List<BookingSaga> findByStatusAndDeadlineAtBefore(BookingSaga.Status status, LocalDateTime deadlineAt) {
+        return repository.findByStatusAndDeadlineAtBefore(status.name().toLowerCase(Locale.ROOT), deadlineAt)
+                .stream().map(this::toDomain).toList();
     }
 
     private BookingSagaJpaEntity toEntity(BookingSaga saga) {

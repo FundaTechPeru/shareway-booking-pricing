@@ -2,44 +2,35 @@ package com.fundatechperu.shareway.booking.application.service;
 
 import com.fundatechperu.shareway.booking.application.dto.request.CreateBookingRequest;
 import com.fundatechperu.shareway.booking.application.dto.response.BookingResponse;
+import com.fundatechperu.shareway.booking.application.dto.response.CancellationResponse;
 import com.fundatechperu.shareway.booking.domain.exception.*;
-import com.fundatechperu.shareway.booking.domain.model.Booking;
-import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
-import com.fundatechperu.shareway.booking.domain.model.SeatInventory;
-import com.fundatechperu.shareway.booking.domain.repository.*;
-import com.fundatechperu.shareway.booking.domain.service.CancellationPolicy;
+import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Clock;
-import java.time.Instant;
 import java.util.UUID;
 
+/**
+ * Booking use cases outside the transactions: request validation, optimistic-lock retries
+ * and the delegation to the atomic operations of {@link BookingTransactionalService}.
+ */
 @Service
 public class BookingService {
     private final BookingTransactionalService transactionalService;
     private final BookingRepository bookingRepository;
-    private final SeatInventoryRepository seatInventoryRepository;
     private final int maxAttempts;
     private final long backoffMs;
-    private final CancellationPolicy cancellationPolicy;
-    private final Clock clock;
 
     public BookingService(BookingTransactionalService transactionalService, BookingRepository bookingRepository,
-                          SeatInventoryRepository seatInventoryRepository,
                           @Value("${booking.reservation.max-attempts:3}") int maxAttempts,
-                          @Value("${booking.reservation.backoff-ms:20}") long backoffMs,
-                          CancellationPolicy cancellationPolicy, Clock clock) {
+                          @Value("${booking.reservation.backoff-ms:20}") long backoffMs) {
         this.transactionalService = transactionalService;
         this.bookingRepository = bookingRepository;
-        this.seatInventoryRepository = seatInventoryRepository;
         this.maxAttempts = maxAttempts;
         this.backoffMs = backoffMs;
-        this.cancellationPolicy = cancellationPolicy;
-        this.clock = clock;
     }
 
     /**
@@ -75,42 +66,30 @@ public class BookingService {
                 .orElseThrow(() -> new BookingNotFoundException(bookingId));
     }
 
-    public record CancellationResponse(BookingResponse booking, boolean penaltyApplicable) {}
-
-    @Transactional
-    public CancellationResponse cancel(UUID bookingId) {
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new BookingNotFoundException(bookingId));
-        SeatInventory inventory = seatInventoryRepository.findById(booking.getGroupId())
-                .orElseThrow(() -> new GroupNotFoundException(booking.getGroupId()));
-        // departure_at lives in Driver Operations & Routing, not in this schema: while it is
-        // unavailable the 30-minute window cannot be evaluated, so no penalty is flagged.
-        Instant departureAt = null;
-        boolean applicable = departureAt != null && cancellationPolicy.isPenaltyApplicable(clock.instant(), departureAt);
-        if (booking.getStatus() != BookingStatus.CANCELLED) {
-            booking.cancel();
-            inventory.releaseSeat();
-            seatInventoryRepository.save(inventory);
-            bookingRepository.save(booking);
-        }
-        return new CancellationResponse(BookingResponse.from(booking), applicable);
-    }
-
     /**
      * Cancellation as the API Gateway hands it over: the passenger is whoever the validated
      * X-User-Id header says. No JWT is read inside this service, so there is no admin bypass.
      * A missing header is a 400; a different passenger is a 404 (the booking does not exist
-     * as far as that passenger is concerned).
+     * as far as that passenger is concerned). The cancellation transaction is retried on
+     * optimistic-lock failures (many passengers cancelling the same group at once).
      */
-    @Transactional
     public CancellationResponse cancel(UUID bookingId, UUID actorId) {
         if (actorId == null)
             throw new InvalidBookingRequestException("X-User-Id header is required");
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new BookingNotFoundException(bookingId));
-        if (!actorId.equals(booking.getPassengerId())) {
-            throw new BookingNotFoundException(bookingId);
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return transactionalService.cancelOnce(bookingId, actorId);
+            } catch (ObjectOptimisticLockingFailureException | CannotAcquireLockException exception) {
+                transactionalService.incrementRetry();
+                if (attempt == maxAttempts) throw exception;
+                try {
+                    Thread.sleep(backoffMs + (long) (Math.random() * 10));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw exception;
+                }
+            }
         }
-        return cancel(bookingId);
+        throw new IllegalStateException("Cancellation of " + bookingId + " could not be retried");
     }
 }

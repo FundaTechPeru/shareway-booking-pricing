@@ -1,8 +1,12 @@
 package com.fundatechperu.shareway.booking.shared.events;
-import java.time.Instant; import java.util.List; import java.util.UUID;
-public record TripCompleted(UUID eventId, Instant occurredAt, UUID tripId, UUID driverId, UUID groupId,
-                            List<UUID> bookingIds) {
-    public TripCompleted {
-        bookingIds = List.copyOf(bookingIds);
-    }
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * Consumed event: a trip group finished. The in_progress bookings of the group move to
+ * completed and the final fare is priced with the REAL distance carried by this event.
+ */
+public record TripCompleted(UUID eventId, Instant occurredAt, UUID groupId, BigDecimal distanceKm) {
 }

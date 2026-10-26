@@ -6,6 +6,7 @@ import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
 import com.fundatechperu.shareway.booking.infrastructure.persistence.entity.BookingJpaEntity;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -37,6 +38,18 @@ public class BookingRepositoryAdapter implements BookingRepository {
     @Override
     public boolean existsByRequestId(UUID requestId) {
         return repository.existsByRequestId(requestId);
+    }
+
+    @Override
+    public List<Booking> findByGroupIdAndStatus(UUID groupId, BookingStatus status) {
+        return repository.findByGroupIdAndStatus(groupId, status.name().toLowerCase(Locale.ROOT))
+                .stream().map(this::toDomain).toList();
+    }
+
+    @Override
+    public List<Booking> findByGroupIdAndStatusNot(UUID groupId, BookingStatus status) {
+        return repository.findByGroupIdAndStatusNot(groupId, status.name().toLowerCase(Locale.ROOT))
+                .stream().map(this::toDomain).toList();
     }
 
     private BookingJpaEntity toEntity(Booking booking) {

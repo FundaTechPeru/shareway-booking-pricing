@@ -44,6 +44,12 @@ public class BookingSaga {
         updatedAt = LocalDateTime.now();
     }
 
+    /** Moves the deadline of the current step (each step has its own timeout). */
+    public void reschedule(LocalDateTime newDeadlineAt) {
+        this.deadlineAt = newDeadlineAt;
+        this.updatedAt = LocalDateTime.now();
+    }
+
     public void complete() {
         status = Status.COMPLETED;
         updatedAt = LocalDateTime.now();

@@ -208,11 +208,14 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
         assertEquals(404, stranger.getStatusCode().value());
         assertEquals(3, availableSeats(groupId), "the seat must still be held");
 
-        // the owner cancels -> 200 and the seat is released
+        // the owner cancels -> 200 and the seat is released (Sprint 2 body: flat, with penalty fields)
         ResponseEntity<String> owner = cancel(bookingId, PASSENGER_ID);
         assertEquals(200, owner.getStatusCode().value(), String.valueOf(owner.getBody()));
-        assertEquals("CANCELLED", objectMapper.readTree(owner.getBody())
-                .path("booking").path("status").asText());
+        JsonNode cancelBody = objectMapper.readTree(owner.getBody());
+        assertEquals(bookingId.toString(), cancelBody.get("bookingId").asText());
+        assertEquals("CANCELLED", cancelBody.get("status").asText());
+        assertTrue(cancelBody.get("penaltyAmount").isNull(),
+                "a cancellation far from the departure must not be fined");
         assertEquals(4, availableSeats(groupId), "available_seats must go back to 4");
         assertEquals("cancelled", jdbcTemplate.queryForObject(
                 "SELECT status FROM bookings WHERE booking_id = ?", String.class, bookingId));

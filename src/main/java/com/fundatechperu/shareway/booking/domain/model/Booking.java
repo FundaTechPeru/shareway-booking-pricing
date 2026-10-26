@@ -84,6 +84,16 @@ public class Booking {
 
     public void cancel() { transitionTo(BookingStatus.CANCELLED); }
 
+    /**
+     * Stores the boarding codes of a confirmed booking. Only the HASHES are kept
+     * (BCrypt for the PIN, SHA-256 for the QR token): the clear values travel once in
+     * the BookingConfirmed event and are never exposed by the API.
+     */
+    public void assignBoardingCodes(String pinHash, String qrTokenHash) {
+        this.pinHash = pinHash;
+        this.qrTokenHash = qrTokenHash;
+    }
+
     public UUID getBookingId() { return bookingId; }
     public UUID getRequestId() { return requestId; }
     public UUID getGroupId() { return groupId; }
