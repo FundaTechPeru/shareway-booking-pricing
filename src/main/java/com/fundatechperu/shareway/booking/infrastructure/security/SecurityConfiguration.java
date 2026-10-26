@@ -8,7 +8,7 @@ import org.springframework.security.web.SecurityFilterChain;
 
 /**
  * This service does not authenticate anyone: it trusts the X-User-Id header, which the API
- * Gateway validates before forwarding it (AGENTS.md). The filter chain therefore only
+ * Gateway validates before forwarding it. The filter chain therefore only
  * disables CSRF and sessions and permits every request. There is no JWT resource server
  * inside the service, and the service must not be reachable without the gateway.
  */

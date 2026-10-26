@@ -13,7 +13,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * State machine of AGENTS.md:
+ * State machine:
  * requested -> grouped -> confirmed -> boarded -> in_progress -> completed,
  * and requested|grouped|confirmed -> cancelled. Every other transition is invalid.
  */

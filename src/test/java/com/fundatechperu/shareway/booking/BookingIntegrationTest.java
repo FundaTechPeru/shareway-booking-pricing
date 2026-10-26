@@ -252,7 +252,7 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Actuator contract from AGENTS.md: only health and info are exposed, and the health
+     * Actuator contract: only health and info are exposed, and the health
      * endpoint answers with liveness and readiness probes. Every other actuator endpoint
      * must not exist.
      */
@@ -286,7 +286,7 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Swagger/OpenAPI contract from AGENTS.md: the UI lives at /swagger-ui.html and the machine
+     * Swagger/OpenAPI contract: the UI lives at /swagger-ui.html and the machine
      * document at /v3/api-docs. The document must describe the endpoints and the X-User-Id header
      * of the API Gateway, and must not advertise any JWT security scheme (there is none left).
      */

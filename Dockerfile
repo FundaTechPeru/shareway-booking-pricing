@@ -1,5 +1,5 @@
 # =============================================================================
-# ShareWay Booking & Pricing - multi-stage image (AGENTS.md > Deploy)
+# ShareWay Booking & Pricing - multi-stage image
 # Stage 1 builds the jar with Maven + JDK 21; stage 2 ships only the JRE and the jar.
 # No secrets and no configuration are baked into the image: DB_URL, DB_USER,
 # DB_PASSWORD, SERVER_PORT and SPRING_PROFILES_ACTIVE arrive as environment

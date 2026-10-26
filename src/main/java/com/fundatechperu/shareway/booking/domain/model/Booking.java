@@ -63,7 +63,7 @@ public class Booking {
     }
 
     /**
-     * Applies the state machine: only the transitions listed in AGENTS.md are accepted.
+     * Applies the state machine: only the valid transitions are accepted.
      */
     public void transitionTo(BookingStatus target) {
         if (target == null) throw new InvalidBookingTransitionException(status, null);

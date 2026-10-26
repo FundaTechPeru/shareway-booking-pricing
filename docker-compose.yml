@@ -1,5 +1,5 @@
 # =============================================================================
-# ShareWay Booking & Pricing - local stack (AGENTS.md > Deploy)
+# ShareWay Booking & Pricing - local stack
 # Two services: postgres 16 (data kept in a named volume, healthcheck with
 # pg_isready) and this service built from ./Dockerfile. The application waits
 # until PostgreSQL reports healthy; Flyway applies the migrations on startup.
@@ -12,7 +12,7 @@ services:
   postgres:
     image: postgres:16
     environment:
-      # The database name is fixed: shareway_booking (AGENTS.md).
+      # The database name is fixed: shareway_booking.
       POSTGRES_DB: shareway_booking
       POSTGRES_USER: ${DB_USER:-postgres}
       # Fails fast with a clear message when .env is missing or DB_PASSWORD is empty.
