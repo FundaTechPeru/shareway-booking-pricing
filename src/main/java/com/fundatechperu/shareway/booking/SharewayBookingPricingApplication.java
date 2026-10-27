@@ -1,4 +1,4 @@
-package com.fundatechperu.shareway.bookingpricing;
+package com.fundatechperu.shareway.booking;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

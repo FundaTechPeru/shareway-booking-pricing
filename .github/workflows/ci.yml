@@ -1,0 +1,82 @@
+name: CI
+
+# Compiles, runs the test suite (against a PostgreSQL service like the local one) and
+# builds the Docker image on every push. The image is published to GitHub Container
+# Registry ONLY when a version tag such as v0.1.0 is pushed.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # The integration tests only accept a database whose name ends in -test.
+          POSTGRES_DB: shareway-booking-pricing-test
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DB_PASSWORD: postgres
+      TEST_DB_URL: jdbc:postgresql://localhost:5432/shareway-booking-pricing-test
+      TEST_DB_USER: postgres
+      TEST_DB_PASSWORD: postgres
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build and test
+        run: ./mvnw -B clean verify
+
+      # ghcr.io rejects uppercase names, so the owner is lowercased once and
+      # reused by every docker step through $IMAGE.
+      - name: Image name (ghcr.io with a lowercase owner)
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE=ghcr.io/${OWNER}/shareway-booking-pricing" >> "$GITHUB_ENV"
+
+      # Every build is tagged with the short commit hash. A push of a tag such
+      # as v0.2.0 additionally carries that same git tag (always with the "v").
+      - name: Image tags (short hash, plus the git tag on v* releases)
+        run: |
+          echo "SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          fi
+
+      # On pushes and pull requests the image is only built to validate the Dockerfile.
+      - name: Build the image
+        run: docker build -t "$IMAGE:$SHORT" .
+
+      - name: Publish the image (only on version tags, e.g. v0.1.0)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$IMAGE:$SHORT" "$IMAGE:$RELEASE_TAG"
+          docker push "$IMAGE:$SHORT"
+          docker push "$IMAGE:$RELEASE_TAG"

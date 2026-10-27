@@ -1,0 +1,58 @@
+# =============================================================================
+# ShareWay Booking & Pricing - local stack
+# Two services: postgres 16 (data kept in a named volume, healthcheck with
+# pg_isready) and this service built from ./Dockerfile. The application waits
+# until PostgreSQL reports healthy; Flyway applies the migrations on startup.
+# Every sensitive value comes from .env (copy .env.example first): nothing
+# secret is written in this file. If RabbitMQ or Redis are ever needed, they
+# are added here.
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      # The database name is fixed: shareway_booking.
+      POSTGRES_DB: shareway_booking
+      POSTGRES_USER: ${DB_USER:-postgres}
+      # Fails fast with a clear message when .env is missing or DB_PASSWORD is empty.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Copy .env.example to .env and set DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready answers as soon as the server accepts connections.
+      # $$ escapes compose interpolation so the shell inside the container reads
+      # POSTGRES_USER / POSTGRES_DB from the container's own environment.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    # Uncomment to reach PostgreSQL from the host (psql, IntelliJ):
+    # ports:
+    #   - "5432:5432"
+
+  booking-pricing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shareway-booking-pricing:local
+    depends_on:
+      postgres:
+        # Start only after pg_isready is green, so Flyway never races the DB.
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      # Inside the compose network the database is reached through the service
+      # name "postgres", not localhost. This value is built here on purpose:
+      # the DB_URL in .env (localhost) is for running the app outside Docker.
+      DB_URL: jdbc:postgresql://postgres:5432/shareway_booking
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?Copy .env.example to .env and set DB_PASSWORD}
+      SERVER_PORT: ${SERVER_PORT:-8080}
+    ports:
+      # Host and container port always match, so SERVER_PORT in .env drives both.
+      - "${SERVER_PORT:-8080}:${SERVER_PORT:-8080}"
+
+volumes:
+  postgres-data:

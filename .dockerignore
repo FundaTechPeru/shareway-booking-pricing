@@ -1,0 +1,21 @@
+# What Docker must NOT send to the daemon (build context).
+
+# Build output of previous runs.
+target
+
+# Version control and IDE metadata.
+.git
+.idea
+
+# Local secrets: never inside the image. Only .env.example (example values)
+# lives in the repository.
+.env
+.env.*
+*.env
+**/.env
+**/*.env
+
+# Documentation is not needed to build the jar, except README.md.
+*.md
+**/*.md
+!README.md

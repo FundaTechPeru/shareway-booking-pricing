@@ -1,0 +1,14 @@
+# Production (cloud): activate with SPRING_PROFILES_ACTIVE=prod.
+# No defaults here: DB_URL, DB_USER, DB_PASSWORD and SERVER_PORT must all come from
+# environment variables (they are declared without a default in application.yml).
+# SQL logging is off in this profile.
+spring:
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+logging:
+  level:
+    root: INFO
