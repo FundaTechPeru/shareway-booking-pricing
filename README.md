@@ -51,6 +51,35 @@ psql -h localhost -p 5432 -U postgres -d shareway_booking \
 
 The same script can be run from an IntelliJ PostgreSQL console. It is never executed automatically by the application.
 
+## Base de datos en Supabase
+
+The service can run against a PostgreSQL database hosted in Supabase (free plan). Use the **Session pooler**:
+
+| Setting | Value |
+| --- | --- |
+| Host | `aws-1-sa-east-1.pooler.supabase.com` |
+| Port | `5432` (Session pooler) |
+| Database | `postgres` |
+| User | `postgres.<project-id>` |
+| Password | the database password set in the Supabase dashboard |
+
+- **Use the Session pooler, not the other two options**: the Transaction pooler (port `6543`) requires special session handling that the JDBC driver does not do by default, and the direct connection is IPv6-only and does not work from most home networks.
+- The JDBC URL must keep `sslmode=require`, e.g. `jdbc:postgresql://aws-1-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=require`.
+- The password is passed only through `DB_PASSWORD`, exactly as typed in the dashboard: do not URL-encode it, do not add it to the URL and do not write it in any file that gets committed (`.env.supabase` and `.env` are ignored; only `.env.supabase.example` and `.env.example` are tracked).
+- **A free Supabase project pauses after about a week without use.** The first connection after waking it up can take ~30 seconds or fail once; just retry. A nightly job or any weekly request keeps it awake.
+- Migrations are applied automatically by Flyway at startup; `spring.jpa.hibernate.ddl-auto=validate` only checks the schema, and `spring.flyway.clean-disabled=true` blocks `clean` in every profile except tests. In the `prod` profile HikariCP keeps the pool small (`DB_POOL_SIZE`, default `5`, `minimum-idle=1`, `connection-timeout=20s`) to stay inside the free pooler limits.
+- Copy `.env.supabase.example` to `.env.supabase` for Docker Compose-style usage, or load the variables for a single PowerShell session without touching any file (they disappear when the window closes):
+
+```powershell
+$env:DB_URL = "jdbc:postgresql://aws-1-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+$env:DB_USER = "postgres.<project-id>"
+$env:DB_PASSWORD = Read-Host "Supabase password"   # typed, never written to disk or history
+$env:DB_POOL_SIZE = "5"
+$env:SPRING_PROFILES_ACTIVE = "prod"
+$env:SERVER_PORT = "8080"
+./mvnw.cmd spring-boot:run
+```
+
 ## API
 
 - `POST /bookings` (body `groupId` + `requestId`; cabeceras `X-User-Id` e `Idempotency-Key`) returns `202 Accepted` with `Location` and `{bookingId, status: REQUESTED}`. In one local transaction it holds a seat of `seat_inventories` with an optimistic lock, creates the booking in `requested`, records the `estimated` fare, starts the booking saga (`running`, `current_step=AUTHORIZE_PAYMENT`, `deadline_at=now+15min`) and publishes `SeatHeld` + `PaymentAuthorizationRequested`. Replaying the same `Idempotency-Key` returns the original booking without creating another one. `400` if `groupId`, `requestId` or `X-User-Id` is missing; `404` if the group is unknown or no fare rule is valid today; `409` with `"El viaje ya no tiene asientos disponibles."` when there are no seats or the optimistic lock keeps failing after `booking.reservation.max-attempts` retries.
@@ -270,6 +299,7 @@ No real values are stored in this repository: only `.env.example` carries placeh
 | `DB_URL` | Yes (no default outside `dev`) | PostgreSQL JDBC URL | `jdbc:postgresql://localhost:5432/shareway_booking` |
 | `DB_USER` | Yes (no default outside `dev`) | Database user | `postgres` |
 | `DB_PASSWORD` | Yes | Database password | *(no example value: set it only in your local `.env`)* |
+| `DB_POOL_SIZE` | Optional (prod) | HikariCP `maximum-pool-size` in the `prod` profile (`minimum-idle=1`, `connection-timeout=20000`) | `5` |
 | `SERVER_PORT` | Yes (no default outside `dev`) | HTTP port of the service | `8080` |
 | `TEST_DB_URL`, `TEST_DB_USER`, `TEST_DB_PASSWORD` | Optional | Override the integration-test database | `jdbc:postgresql://localhost:5432/<name>-test` |
 | `BOOKING_RESERVATION_MAX_ATTEMPTS`, `BOOKING_RESERVATION_BACKOFF_MS` | Optional | Optimistic-lock retry policy | `3`, `20` |

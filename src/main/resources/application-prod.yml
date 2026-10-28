@@ -3,6 +3,15 @@
 # environment variables (they are declared without a default in application.yml).
 # SQL logging is off in this profile.
 spring:
+  datasource:
+    # Small pool on purpose: the free Supabase Session pooler has a tight connection
+    # limit, so the service keeps at most 5 connections, 1 idle, and gives up waiting
+    # after 20 seconds instead of piling up threads.
+    hikari:
+      maximum-pool-size: "${DB_POOL_SIZE:5}"
+      minimum-idle: 1
+      connection-timeout: 20000
+
   jpa:
     show-sql: false
     properties:
