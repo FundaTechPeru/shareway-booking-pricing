@@ -55,7 +55,7 @@ public class BookingController {
                     content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
             @ApiResponse(responseCode = "409", description = NO_SEATS_MESSAGE,
                     content = @Content(schema = @Schema(implementation = ErrorResponse.class),
-                            examples = @ExampleObject(value = "{\"status\":409,\"message\":\"" + NO_SEATS_MESSAGE + "\",\"timestamp\":\"2026-10-25T10:15:30\"}")))
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"" + NO_SEATS_MESSAGE + "\",\"path\":\"/api/v1/bookings\"}")))
     })
     @PostMapping
     public ResponseEntity<BookingResponse> createBooking(
@@ -105,7 +105,7 @@ public class BookingController {
                     content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
             @ApiResponse(responseCode = "409", description = "The booking cannot be cancelled from its current status (boarded, in_progress or completed)",
                     content = @Content(schema = @Schema(implementation = ErrorResponse.class),
-                            examples = @ExampleObject(value = "{\"status\":409,\"message\":\"La reserva ya no puede cancelarse en su estado actual: BOARDED\",\"timestamp\":\"2026-10-25T10:15:30\"}")))
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"La reserva ya no puede cancelarse en su estado actual: BOARDED\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}")))
     })
     @PostMapping("/{bookingId}/cancel")
     public ResponseEntity<CancellationResponse> cancel(

@@ -123,6 +123,21 @@ class BookingControllerTest {
                 .andExpect(jsonPath("$.message").value("Booking not found: " + bookingId));
     }
 
+    /** Uniform error body: {timestamp, status, error, message, path} on every failure. */
+    @Test
+    void everyErrorCarriesTheUniformBody() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        when(bookingService.findById(bookingId)).thenThrow(new BookingNotFoundException(bookingId));
+
+        mockMvc.perform(get("/api/v1/bookings/" + bookingId))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.error").value("Not Found"))
+                .andExpect(jsonPath("$.message").value("Booking not found: " + bookingId))
+                .andExpect(jsonPath("$.path").value("/api/v1/bookings/" + bookingId));
+    }
+
     @Test
     void cancelWithTheOwnerHeaderReturns200WithoutPenalty() throws Exception {
         UUID bookingId = UUID.randomUUID();
