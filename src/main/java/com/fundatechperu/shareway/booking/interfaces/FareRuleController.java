@@ -19,7 +19,7 @@ import java.util.List;
  * rules are seeded by Flyway (V2) and are not created or modified through this API.
  */
 @RestController
-@RequestMapping("/fare-rules")
+@RequestMapping("/api/v1/fare-rules")
 @Tag(name = "Fare Rules", description = "Fare-rule catalogue used to price trips. Read-only: GET only.")
 public class FareRuleController {
 

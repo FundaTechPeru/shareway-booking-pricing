@@ -16,7 +16,7 @@ import java.util.UUID;
 
 /**
  * Persists the fare of a booking (estimated or final) using the same {@link FarePolicy}
- * strategy that answers GET /fares/estimate, so the recorded amount always matches the
+ * strategy that answers GET /api/v1/fares/estimate, so the recorded amount always matches the
  * quote. The UNIQUE (booking_id, fare_type) pair is respected: an existing row is never
  * duplicated, it is only overwritten when the caller explicitly recalculates
  * (overwriteExisting = true, used by RouteUpdated).

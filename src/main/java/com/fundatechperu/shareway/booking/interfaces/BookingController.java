@@ -25,7 +25,7 @@ import java.util.UUID;
  * API Gateway: this service performs no authentication of its own.
  */
 @RestController
-@RequestMapping("/bookings")
+@RequestMapping("/api/v1/bookings")
 @Tag(name = "Bookings", description = "Seat reservations: create, query and cancel bookings.")
 public class BookingController {
 
@@ -68,7 +68,7 @@ public class BookingController {
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         BookingResponse response = bookingService.createBooking(request, passengerId, idempotencyKey);
         return ResponseEntity.accepted()
-                .location(URI.create("/bookings/" + response.bookingId()))
+                .location(URI.create("/api/v1/bookings/" + response.bookingId()))
                 .body(response);
     }
 

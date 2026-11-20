@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/fares/estimate")
+@RequestMapping("/api/v1/fares/estimate")
 @Tag(name = "Fares", description = "Fare estimation for shared trip groups. Read-only: nothing is persisted.")
 public class FareEstimateController {
 

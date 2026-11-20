@@ -447,18 +447,18 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
         headers.set("Idempotency-Key", UUID.randomUUID().toString());
         Map<String, String> payload = Map.of("groupId", groupId.toString(),
                 "requestId", UUID.randomUUID().toString());
-        return rest.postForEntity("/bookings", new HttpEntity<>(payload, headers), String.class);
+        return rest.postForEntity("/api/v1/bookings", new HttpEntity<>(payload, headers), String.class);
     }
 
     private ResponseEntity<String> getBooking(UUID bookingId) {
-        return rest.exchange("/bookings/{bookingId}", HttpMethod.GET,
+        return rest.exchange("/api/v1/bookings/{bookingId}", HttpMethod.GET,
                 new HttpEntity<>(jsonHeaders()), String.class, bookingId);
     }
 
     private ResponseEntity<String> cancel(UUID bookingId, UUID actorId) {
         HttpHeaders headers = jsonHeaders();
         headers.set("X-User-Id", actorId.toString());
-        return rest.exchange("/bookings/{bookingId}/cancel", HttpMethod.POST,
+        return rest.exchange("/api/v1/bookings/{bookingId}/cancel", HttpMethod.POST,
                 new HttpEntity<>(headers), String.class, bookingId);
     }
 

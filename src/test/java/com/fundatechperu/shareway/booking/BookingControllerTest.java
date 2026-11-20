@@ -28,7 +28,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * HTTP contract of POST /bookings and GET /bookings/{id}: 202 + Location, 400, 404 and
+ * HTTP contract of POST /api/v1/bookings and GET /api/v1/bookings/{id}: 202 + Location, 400, 404 and
  * the 409 body with "El viaje ya no tiene asientos disponibles."
  */
 class BookingControllerTest {
@@ -55,20 +55,20 @@ class BookingControllerTest {
         when(bookingService.createBooking(any(CreateBookingRequest.class), eq(PASSENGER_ID), eq("idem-key-1")))
                 .thenReturn(new BookingResponse(bookingId, BookingStatus.REQUESTED));
 
-        mockMvc.perform(post("/bookings")
+        mockMvc.perform(post("/api/v1/bookings")
                         .header("X-User-Id", PASSENGER_ID.toString())
                         .header("Idempotency-Key", "idem-key-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
                 .andExpect(status().isAccepted())
-                .andExpect(header().string("Location", "/bookings/" + bookingId))
+                .andExpect(header().string("Location", "/api/v1/bookings/" + bookingId))
                 .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
                 .andExpect(jsonPath("$.status").value("REQUESTED"));
     }
 
     @Test
     void createWithoutGroupIdIsA400AndNeverReachesTheService() throws Exception {
-        mockMvc.perform(post("/bookings")
+        mockMvc.perform(post("/api/v1/bookings")
                         .header("X-User-Id", PASSENGER_ID.toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"requestId\":\"22222222-2222-2222-2222-222222222222\"}"))
@@ -82,7 +82,7 @@ class BookingControllerTest {
         when(bookingService.createBooking(any(), isNull(), any()))
                 .thenThrow(new InvalidBookingRequestException("X-User-Id header is required"));
 
-        mockMvc.perform(post("/bookings")
+        mockMvc.perform(post("/api/v1/bookings")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
                 .andExpect(status().isBadRequest())
@@ -93,7 +93,7 @@ class BookingControllerTest {
     void noSeatsIsA409WithTheExactMessage() throws Exception {
         when(bookingService.createBooking(any(), any(), any())).thenThrow(new NoSeatsAvailableException());
 
-        mockMvc.perform(post("/bookings")
+        mockMvc.perform(post("/api/v1/bookings")
                         .header("X-User-Id", PASSENGER_ID.toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
@@ -106,7 +106,7 @@ class BookingControllerTest {
         UUID bookingId = UUID.randomUUID();
         when(bookingService.findById(bookingId)).thenReturn(new BookingResponse(bookingId, BookingStatus.REQUESTED));
 
-        mockMvc.perform(get("/bookings/" + bookingId))
+        mockMvc.perform(get("/api/v1/bookings/" + bookingId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
                 .andExpect(jsonPath("$.status").value("REQUESTED"));
@@ -117,7 +117,7 @@ class BookingControllerTest {
         UUID bookingId = UUID.randomUUID();
         when(bookingService.findById(bookingId)).thenThrow(new BookingNotFoundException(bookingId));
 
-        mockMvc.perform(get("/bookings/" + bookingId))
+        mockMvc.perform(get("/api/v1/bookings/" + bookingId))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.message").value("Booking not found: " + bookingId));
@@ -129,7 +129,7 @@ class BookingControllerTest {
         when(bookingService.cancel(eq(bookingId), eq(PASSENGER_ID)))
                 .thenReturn(new CancellationResponse(bookingId, BookingStatus.CANCELLED, null, null));
 
-        mockMvc.perform(post("/bookings/" + bookingId + "/cancel")
+        mockMvc.perform(post("/api/v1/bookings/" + bookingId + "/cancel")
                         .header("X-User-Id", PASSENGER_ID.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
@@ -145,7 +145,7 @@ class BookingControllerTest {
                 .thenReturn(new CancellationResponse(bookingId, BookingStatus.CANCELLED,
                         new java.math.BigDecimal("4.27"), "PEN"));
 
-        mockMvc.perform(post("/bookings/" + bookingId + "/cancel")
+        mockMvc.perform(post("/api/v1/bookings/" + bookingId + "/cancel")
                         .header("X-User-Id", PASSENGER_ID.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bookingId").value(bookingId.toString()))
@@ -161,7 +161,7 @@ class BookingControllerTest {
                 .thenThrow(new BookingCannotBeCancelledException(
                         "La reserva ya no puede cancelarse en su estado actual: BOARDED"));
 
-        mockMvc.perform(post("/bookings/" + bookingId + "/cancel")
+        mockMvc.perform(post("/api/v1/bookings/" + bookingId + "/cancel")
                         .header("X-User-Id", PASSENGER_ID.toString()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.status").value(409))
@@ -175,7 +175,7 @@ class BookingControllerTest {
         when(bookingService.cancel(eq(bookingId), isNull()))
                 .thenThrow(new InvalidBookingRequestException("X-User-Id header is required"));
 
-        mockMvc.perform(post("/bookings/" + bookingId + "/cancel"))
+        mockMvc.perform(post("/api/v1/bookings/" + bookingId + "/cancel"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value("X-User-Id header is required"));
@@ -188,7 +188,7 @@ class BookingControllerTest {
         when(bookingService.cancel(eq(bookingId), eq(strangerId)))
                 .thenThrow(new BookingNotFoundException(bookingId));
 
-        mockMvc.perform(post("/bookings/" + bookingId + "/cancel")
+        mockMvc.perform(post("/api/v1/bookings/" + bookingId + "/cancel")
                         .header("X-User-Id", strangerId.toString()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404));

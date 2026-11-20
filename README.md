@@ -82,24 +82,24 @@ $env:SERVER_PORT = "8080"
 
 ## API
 
-- `POST /bookings` (body `groupId` + `requestId`; cabeceras `X-User-Id` e `Idempotency-Key`) returns `202 Accepted` with `Location` and `{bookingId, status: REQUESTED}`. In one local transaction it holds a seat of `seat_inventories` with an optimistic lock, creates the booking in `requested`, records the `estimated` fare, starts the booking saga (`running`, `current_step=AUTHORIZE_PAYMENT`, `deadline_at=now+15min`) and publishes `SeatHeld` + `PaymentAuthorizationRequested`. Replaying the same `Idempotency-Key` returns the original booking without creating another one. `400` if `groupId`, `requestId` or `X-User-Id` is missing; `404` if the group is unknown or no fare rule is valid today; `409` with `"El viaje ya no tiene asientos disponibles."` when there are no seats or the optimistic lock keeps failing after `booking.reservation.max-attempts` retries.
-- `GET /bookings/{bookingId}` returns `200 {bookingId, status}` (status in uppercase) or `404`.
-- `POST /bookings/{bookingId}/cancel` cancels a booking and releases its seat. Only bookings in `REQUESTED`, `GROUPED` or `CONFIRMED` can be cancelled; `boarded`, `in_progress` or `completed` answer `409` with a clear message, cancelling twice answers `200` without changes and an unknown booking answers `404`. The passenger comes from `X-User-Id`: the owner gets `200 {bookingId, status: CANCELLED, penaltyAmount, currency}` (`penaltyAmount` is `null` when there is no penalty), a missing header `400` and another passenger `404`. A cancellation closer than 30 minutes to the departure also creates a `penalties` row (20 % of the estimated fare, minimum 1.00, reason `LATE_CANCELLATION`).
+- `POST /api/v1/bookings` (body `groupId` + `requestId`; cabeceras `X-User-Id` e `Idempotency-Key`) returns `202 Accepted` with `Location` and `{bookingId, status: REQUESTED}`. In one local transaction it holds a seat of `seat_inventories` with an optimistic lock, creates the booking in `requested`, records the `estimated` fare, starts the booking saga (`running`, `current_step=AUTHORIZE_PAYMENT`, `deadline_at=now+15min`) and publishes `SeatHeld` + `PaymentAuthorizationRequested`. Replaying the same `Idempotency-Key` returns the original booking without creating another one. `400` if `groupId`, `requestId` or `X-User-Id` is missing; `404` if the group is unknown or no fare rule is valid today; `409` with `"El viaje ya no tiene asientos disponibles."` when there are no seats or the optimistic lock keeps failing after `booking.reservation.max-attempts` retries.
+- `GET /api/v1/bookings/{bookingId}` returns `200 {bookingId, status}` (status in uppercase) or `404`.
+- `POST /api/v1/bookings/{bookingId}/cancel` cancels a booking and releases its seat. Only bookings in `REQUESTED`, `GROUPED` or `CONFIRMED` can be cancelled; `boarded`, `in_progress` or `completed` answer `409` with a clear message, cancelling twice answers `200` without changes and an unknown booking answers `404`. The passenger comes from `X-User-Id`: the owner gets `200 {bookingId, status: CANCELLED, penaltyAmount, currency}` (`penaltyAmount` is `null` when there is no penalty), a missing header `400` and another passenger `404`. A cancellation closer than 30 minutes to the departure also creates a `penalties` row (20 % of the estimated fare, minimum 1.00, reason `LATE_CANCELLATION`).
 - `POST /dev/events` (only with the `dev` profile) publishes a simulated event through the same in-memory bus; see [Simulated events](#simulated-events-dev-profile).
-- `GET /fare-rules` lists the fare rules.
-- `GET /fare-rules/{id}` retrieves one rule. The contract exposes **only GET** for fare rules: there is no `POST` and no `PUT`.
-- `GET /fares/estimate?groupId=` returns `200 {amount, currency, ruleVersion}`; `404` when the group has no seat inventory or no fare rule is valid today. Read-only: nothing is persisted.
+- `GET /api/v1/fare-rules` lists the fare rules.
+- `GET /api/v1/fare-rules/{id}` retrieves one rule. The contract exposes **only GET** for fare rules: there is no `POST` and no `PUT`.
+- `GET /api/v1/fares/estimate?groupId=` returns `200 {amount, currency, ruleVersion}`; `404` when the group has no seat inventory or no fare rule is valid today. Read-only: nothing is persisted.
 - Swagger UI: `/swagger-ui.html`
 - OpenAPI document: `/v3/api-docs`
 - Health: `GET /actuator/health` with liveness and readiness (`/actuator/health/liveness`, `/actuator/health/readiness`) and `GET /actuator/info`. Only `health` and `info` are exposed; no other actuator endpoint exists.
 
-This service performs no authentication: the passenger comes from the `X-User-Id` header, which the API Gateway validates before forwarding it. `POST /bookings` answers `400` when that header is missing. No JWT scheme is exposed in the OpenAPI document.
+This service performs no authentication: the passenger comes from the `X-User-Id` header, which the API Gateway validates before forwarding it. `POST /api/v1/bookings` answers `400` when that header is missing. No JWT scheme is exposed in the OpenAPI document.
 
 > **Nota:** Este servicio debe quedar detrás del API Gateway; no exponerlo directamente a internet.
 
 ## Fare estimate assumptions
 
-`GET /fares/estimate?groupId=` is priced by the `FarePolicy` strategy (`DistanceBasedFarePolicy`). Until the neighbouring services land, the endpoint runs on these assumptions:
+`GET /api/v1/fares/estimate?groupId=` is priced by the `FarePolicy` strategy (`DistanceBasedFarePolicy`). Until the neighbouring services land, the endpoint runs on these assumptions:
 
 - **Rule selection**: the active rule is the highest-`version` `fare_rules` row whose `valid_from`/`valid_to` range includes today. If none is valid, the endpoint answers `404`.
 - **Formula**: `amount = farePerPassenger + platformFee`, where `farePerPassenger = (base_amount + amount_per_km * distance_km) / passengers` and `platformFee = farePerPassenger * platform_fee_pct / 100`. Every money step rounds `HALF_UP` to 2 decimals.
@@ -113,7 +113,7 @@ This service performs no authentication: the passenger comes from the `X-User-Id
 
 ```mermaid
 sequenceDiagram
-    Passenger->>Booking: POST /bookings
+    Passenger->>Booking: POST /api/v1/bookings
     Booking->>Booking: saga running / AUTHORIZE_PAYMENT (deadline +15 min)
     Booking-->>Payment Provider: PaymentAuthorizationRequested
     Payment Provider-->>Booking: PaymentAuthorized (simulated via POST /dev/events)
@@ -137,7 +137,7 @@ Events travel through the `EventPublisher` interface with an in-memory implement
 | `TripStarted` | `TripStartedHandler` | `boarded` bookings of the group → `in_progress`. |
 | `TripCompleted` | `TripCompletedHandler` | `in_progress` bookings → `completed`: prices the `final` fare with the real distance (never duplicated) and publishes `FinalFareCalculated`. |
 
-Published by `POST /bookings`: `SeatHeld` and `PaymentAuthorizationRequested`. Published by the lifecycle (Sprint 2): `BookingConfirmed` (confirmation) and `FinalFareCalculated` (closing); `BookingCancelled` is published by the cancellation, the rejected payment and the saga timeout job.
+Published by `POST /api/v1/bookings`: `SeatHeld` and `PaymentAuthorizationRequested`. Published by the lifecycle (Sprint 2): `BookingConfirmed` (confirmation) and `FinalFareCalculated` (closing); `BookingCancelled` is published by the cancellation, the rejected payment and the saga timeout job.
 
 Events live only in this JVM process and are lost if the application stops during processing; a durable Event Bus with retries and an Outbox is future work.
 
@@ -187,7 +187,7 @@ Sprint 2 completes the booking lifecycle on top of the sprint-1 base: no schema 
 
 ```mermaid
 stateDiagram-v2
-    [*] --> requested: POST /bookings
+    [*] --> requested: POST /api/v1/bookings
     requested --> grouped: GroupCompleted
     grouped --> confirmed: ProposalAccepted
     confirmed --> boarded: BoardingValidated
@@ -230,7 +230,7 @@ On `TripCompleted` the final fare is priced with the **real** distance carried b
 
 ### Cancellation and penalty
 
-`POST /bookings/{id}/cancel` (US-12):
+`POST /api/v1/bookings/{id}/cancel` (US-12):
 
 - Allowed from `requested`, `grouped` or `confirmed`. An already cancelled booking answers `200` with no changes (idempotent, no second seat, no second penalty); `boarded`, `in_progress` or `completed` answer `409`; an unknown booking answers `404`.
 - It releases the seat immediately (`available_seats + 1`, never above `capacity`), moves the booking to `cancelled`, leaves the saga `compensated` and publishes `BookingCancelled`. The seat row is locked (`SELECT ... FOR UPDATE`) so simultaneous cancellations of the same group cannot lose an update.

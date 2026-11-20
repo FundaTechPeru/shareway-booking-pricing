@@ -67,7 +67,7 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * (1) Last seat: 20 simultaneous POST /bookings with distinct Idempotency-Key over a group
+     * (1) Last seat: 20 simultaneous POST /api/v1/bookings with distinct Idempotency-Key over a group
      * with available_seats = 1. Exactly one 202 and nineteen 409 with the mandated message;
      * available_seats ends in 0 with exactly one booking and one saga.
      */
@@ -229,26 +229,26 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
     @Test
     void errorStatusCodesFollowTheContract() throws Exception {
         // 400: missing groupId, malformed UUIDs and missing X-User-Id
-        assertEquals(400, statusOf(HttpMethod.GET, "/fares/estimate", null));
-        assertEquals(400, statusOf(HttpMethod.GET, "/fares/estimate?groupId=not-a-uuid", null));
-        assertEquals(400, statusOf(HttpMethod.GET, "/bookings/not-a-uuid", null));
+        assertEquals(400, statusOf(HttpMethod.GET, "/api/v1/fares/estimate", null));
+        assertEquals(400, statusOf(HttpMethod.GET, "/api/v1/fares/estimate?groupId=not-a-uuid", null));
+        assertEquals(400, statusOf(HttpMethod.GET, "/api/v1/bookings/not-a-uuid", null));
 
         HttpHeaders headers = jsonHeaders();
-        ResponseEntity<String> noPassenger = rest.exchange("/bookings", HttpMethod.POST,
+        ResponseEntity<String> noPassenger = rest.exchange("/api/v1/bookings", HttpMethod.POST,
                 new HttpEntity<>(Map.of("groupId", UUID.randomUUID().toString(),
                         "requestId", UUID.randomUUID().toString()), headers), String.class);
         assertEquals(400, noPassenger.getStatusCode().value());
         assertEquals("X-User-Id header is required", messageOf(noPassenger));
 
         // 404: unknown booking, unknown group and unknown URL path
-        assertEquals(404, statusOf(HttpMethod.GET, "/bookings/" + UUID.randomUUID(), null));
+        assertEquals(404, statusOf(HttpMethod.GET, "/api/v1/bookings/" + UUID.randomUUID(), null));
         assertEquals(404, statusOf(HttpMethod.GET,
-                "/fares/estimate?groupId=" + UUID.randomUUID(), null));
+                "/api/v1/fares/estimate?groupId=" + UUID.randomUUID(), null));
         assertEquals(404, statusOf(HttpMethod.GET, "/definitely-not-here", null));
 
         // 405: GET collection of bookings and POST over a GET-only path
-        assertEquals(405, statusOf(HttpMethod.GET, "/bookings", null));
-        assertEquals(405, statusOf(HttpMethod.POST, "/fares/estimate", "{}"));
+        assertEquals(405, statusOf(HttpMethod.GET, "/api/v1/bookings", null));
+        assertEquals(405, statusOf(HttpMethod.POST, "/api/v1/fares/estimate", "{}"));
     }
 
     /**
@@ -297,22 +297,25 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
         assertEquals(200, openApi.getStatusCode().value(), String.valueOf(openApi.getBody()));
 
         JsonNode document = objectMapper.readTree(openApi.getBody());
-        assertTrue(document.path("paths").has("/bookings"), "bookings must be documented");
-        assertTrue(document.path("paths").has("/fares/estimate"),
+        assertTrue(document.path("paths").has("/api/v1/bookings"), "bookings must be documented");
+        assertTrue(document.path("paths").has("/api/v1/fares/estimate"),
                 "fare estimate must be documented");
         assertTrue(openApi.getBody().contains("X-User-Id"), "the gateway header must be documented");
         assertFalse(openApi.getBody().contains("bearerAuth"), "no JWT scheme may be exposed");
         assertFalse(document.path("components").path("securitySchemes").has("bearerAuth"),
                 "components must not carry bearerAuth");
 
-        // Contract of the report: no route keeps the /api/v1 or /pricing prefix.
+        // Gateway contract: every business route lives under /api/v1 and none keeps the
+        // old unprefixed path or a stray /pricing prefix. Actuator and springdoc stay out.
         List<String> paths = new ArrayList<>();
         document.path("paths").fieldNames().forEachRemaining(paths::add);
-        assertTrue(paths.stream().noneMatch(path -> path.startsWith("/api/v1") || path.startsWith("/pricing")),
-                "routes must not keep the old prefix: " + paths);
+        assertTrue(paths.stream().allMatch(path -> path.startsWith("/api/v1")),
+                "every documented route must live under /api/v1: " + paths);
+        assertTrue(paths.stream().noneMatch(path -> path.startsWith("/pricing")),
+                "no /pricing route may exist: " + paths);
 
         // Fare rules are read-only: only GET survives, POST and PUT were removed.
-        JsonNode fareRules = document.path("paths").path("/fare-rules");
+        JsonNode fareRules = document.path("paths").path("/api/v1/fare-rules");
         assertTrue(fareRules.has("get"), "GET /fare-rules must exist");
         assertFalse(fareRules.has("post"), "POST /fare-rules must not exist");
         assertFalse(fareRules.has("put"), "PUT /fare-rules must not exist");
@@ -355,18 +358,18 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
         headers.set("X-User-Id", PASSENGER_ID.toString());
         headers.set("Idempotency-Key", idempotencyKey);
         Map<String, String> payload = Map.of("groupId", groupId.toString(), "requestId", requestId);
-        return rest.postForEntity("/bookings", new HttpEntity<>(payload, headers), String.class);
+        return rest.postForEntity("/api/v1/bookings", new HttpEntity<>(payload, headers), String.class);
     }
 
     private ResponseEntity<String> getBooking(UUID bookingId) {
-        return rest.exchange("/bookings/{bookingId}", HttpMethod.GET,
+        return rest.exchange("/api/v1/bookings/{bookingId}", HttpMethod.GET,
                 new HttpEntity<>(jsonHeaders()), String.class, bookingId);
     }
 
     private ResponseEntity<String> cancel(UUID bookingId, UUID actorId) {
         HttpHeaders headers = jsonHeaders();
         if (actorId != null) headers.set("X-User-Id", actorId.toString());
-        return rest.exchange("/bookings/{bookingId}/cancel", HttpMethod.POST,
+        return rest.exchange("/api/v1/bookings/{bookingId}/cancel", HttpMethod.POST,
                 new HttpEntity<>(headers), String.class, bookingId);
     }
 

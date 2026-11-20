@@ -24,7 +24,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * POST /bookings behaviour outside the transaction: validation (400), optimistic-lock
+ * POST /api/v1/bookings behaviour outside the transaction: validation (400), optimistic-lock
  * retries, and the 409 answer "El viaje ya no tiene asientos disponibles.".
  */
 class BookingServiceTest {

@@ -50,7 +50,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * The single local transaction of POST /bookings: idempotent replay, seat hold with
+ * The single local transaction of POST /api/v1/bookings: idempotent replay, seat hold with
  * optimistic lock, booking in REQUESTED, estimated fare, saga running/AUTHORIZE_PAYMENT
  * with a +15 min deadline, and the SeatHeld + PaymentAuthorizationRequested events.
  */
