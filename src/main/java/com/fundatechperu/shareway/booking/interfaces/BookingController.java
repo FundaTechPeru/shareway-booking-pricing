@@ -50,15 +50,24 @@ public class BookingController {
                     content = @Content(schema = @Schema(implementation = BookingResponse.class),
                             examples = @ExampleObject(value = "{\"bookingId\":\"3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"status\":\"REQUESTED\"}"))),
             @ApiResponse(responseCode = "400", description = "groupId, requestId or X-User-Id is missing",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"X-User-Id header is required\",\"path\":\"/api/v1/bookings\"}"))),
             @ApiResponse(responseCode = "404", description = "Group not found in seat inventories, or no fare rule valid today",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Group not found: 11111111-1111-1111-1111-111111111111\",\"path\":\"/api/v1/bookings\"}"))),
             @ApiResponse(responseCode = "409", description = NO_SEATS_MESSAGE,
                     content = @Content(schema = @Schema(implementation = ErrorResponse.class),
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"" + NO_SEATS_MESSAGE + "\",\"path\":\"/api/v1/bookings\"}")))
     })
     @PostMapping
     public ResponseEntity<BookingResponse> createBooking(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    description = "Booking to request: the trip group to join and the caller-generated replay key",
+                    required = true,
+                    content = @Content(schema = @Schema(implementation = CreateBookingRequest.class),
+                            examples = @ExampleObject(value = """
+                                    {"groupId":"11111111-1111-1111-1111-111111111111",
+                                     "requestId":"22222222-2222-2222-2222-222222222222"}""")))
             @Valid @RequestBody CreateBookingRequest request,
             @Parameter(description = PASSENGER_HEADER_DOC, required = true,
                     example = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
@@ -76,9 +85,11 @@ public class BookingController {
             description = "Returns the booking with its status in uppercase (REQUESTED, GROUPED, ...).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Booking found",
-                    content = @Content(schema = @Schema(implementation = BookingResponse.class))),
+                    content = @Content(schema = @Schema(implementation = BookingResponse.class),
+                            examples = @ExampleObject(value = "{\"bookingId\":\"3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"status\":\"CONFIRMED\"}"))),
             @ApiResponse(responseCode = "404", description = "Unknown booking id",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Booking not found: 3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\"}")))
     })
     @GetMapping("/{bookingId}")
     public ResponseEntity<BookingResponse> findById(
@@ -100,9 +111,11 @@ public class BookingController {
                     content = @Content(schema = @Schema(implementation = CancellationResponse.class),
                             examples = @ExampleObject(value = "{\"bookingId\":\"3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"status\":\"CANCELLED\",\"penaltyAmount\":4.27,\"currency\":\"PEN\"}"))),
             @ApiResponse(responseCode = "400", description = "X-User-Id header is missing",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"X-User-Id header is required\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}"))),
             @ApiResponse(responseCode = "404", description = "Unknown booking id, or the booking belongs to another passenger",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Booking not found: 3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}"))),
             @ApiResponse(responseCode = "409", description = "The booking cannot be cancelled from its current status (boarded, in_progress or completed)",
                     content = @Content(schema = @Schema(implementation = ErrorResponse.class),
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"La reserva ya no puede cancelarse en su estado actual: BOARDED\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}")))

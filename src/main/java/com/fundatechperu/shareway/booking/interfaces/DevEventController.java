@@ -3,6 +3,11 @@ package com.fundatechperu.shareway.booking.interfaces;
 import com.fundatechperu.shareway.booking.domain.exception.InvalidBookingRequestException;
 import com.fundatechperu.shareway.booking.shared.events.*;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -42,6 +47,15 @@ public class DevEventController {
     @Operation(summary = "Publish a simulated event",
             description = "Dispatches the event to the same handlers that consume it in production. "
                     + "Supported types: " + SUPPORTED_TYPES + ".")
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "Event dispatched to the in-memory bus",
+                    content = @Content(schema = @Schema(implementation = DevEventResponse.class),
+                            examples = @ExampleObject(value = "{\"type\":\"PaymentAuthorized\",\"published\":true}"))),
+            @ApiResponse(responseCode = "400", description = "Unsupported type or a required field is missing",
+                    content = @Content(schema = @Schema(implementation =
+                            com.fundatechperu.shareway.booking.infrastructure.web.ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"bookingId is required for PaymentAuthorized\",\"path\":\"/dev/events\"}")))
+    })
     @PostMapping
     public ResponseEntity<DevEventResponse> publish(@Valid @RequestBody DevEventRequest request) {
         Object event = toEvent(request);

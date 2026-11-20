@@ -344,6 +344,62 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
         assertTrue(config.getBody().contains("/v3/api-docs"), "the config must point at the document");
     }
 
+    /**
+     * Documentation quality contract (TB3): no operation may answer "Undocumented", every
+     * response carries a real description, and the request bodies and success responses
+     * expose an example the client can copy.
+     */
+    @Test
+    void openApiDocumentsEveryResponseWithExamples() throws Exception {
+        ResponseEntity<String> openApi = rest.exchange("/v3/api-docs", HttpMethod.GET,
+                new HttpEntity<>(jsonHeaders()), String.class);
+        assertEquals(200, openApi.getStatusCode().value(), String.valueOf(openApi.getBody()));
+        JsonNode document = objectMapper.readTree(openApi.getBody());
+
+        List<String> operations = List.of("get", "post", "put", "delete", "patch");
+        List<String> undocumented = new ArrayList<>();
+        List<String> withoutExample = new ArrayList<>();
+        document.path("paths").fields().forEachRemaining(path -> path.getValue().fields()
+                .forEachRemaining(operation -> {
+                    if (!operations.contains(operation.getKey())) return;
+                    String where = operation.getKey().toUpperCase() + " " + path.getKey();
+                    operation.getValue().path("responses").fields().forEachRemaining(response -> {
+                        String description = response.getValue().path("description").asText();
+                        if (description.isBlank() || "Undocumented".equalsIgnoreCase(description)) {
+                            undocumented.add(where + " -> " + response.getKey());
+                        }
+                        // Success responses must carry a copyable example.
+                        if (response.getKey().startsWith("2")) {
+                            boolean hasExample = response.getValue().path("content")
+                                    .path("application/json").path("examples").isObject()
+                                    || response.getValue().path("content")
+                                    .path("application/json").path("example").isMissingNode() == false;
+                            if (!hasExample) withoutExample.add(where + " -> " + response.getKey());
+                        }
+                    });
+                    // POST bodies must show an example too.
+                    if (operation.getKey().equals("post")) {
+                        boolean hasBodyExample = operation.getValue().path("requestBody").path("content")
+                                .path("application/json").path("examples").isObject()
+                                || !operation.getValue().path("requestBody").path("content")
+                                .path("application/json").path("example").isMissingNode();
+                        boolean noBody = operation.getValue().path("requestBody").isMissingNode();
+                        if (!noBody && !hasBodyExample) withoutExample.add(where + " -> requestBody");
+                    }
+                }));
+
+        assertTrue(undocumented.isEmpty(), "every response must be documented: " + undocumented);
+        assertTrue(withoutExample.isEmpty(), "every success response and body needs an example: "
+                + withoutExample + " ||| RAW: " + document.path("paths").path("/api/v1/bookings").toString());
+
+        // The new error contract is part of the document.
+        JsonNode errorSchema = document.path("components").path("schemas").path("ErrorResponse");
+        for (String field : List.of("timestamp", "status", "error", "message", "path")) {
+            assertTrue(errorSchema.path("properties").has(field),
+                    "ErrorResponse must expose " + field + " in the OpenAPI document");
+        }
+    }
+
     // --------------------------------------------------------------------------- helpers
 
     private int statusOf(HttpMethod method, String path, String body) {
