@@ -35,7 +35,7 @@ public class BookingService {
 
     /**
      * Runs the reservation transaction, retrying on optimistic-lock failures. After the last
-     * attempt the answer is 409 "El viaje ya no tiene asientos disponibles." for both cases:
+     * attempt the answer is 409 "The trip has no seats available." for both cases:
      * no seats left and contention over the same seat.
      */
     public BookingResponse createBooking(CreateBookingRequest request, UUID passengerId, String idempotencyKey) {

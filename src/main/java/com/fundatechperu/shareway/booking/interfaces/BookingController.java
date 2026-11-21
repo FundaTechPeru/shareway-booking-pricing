@@ -29,7 +29,7 @@ import java.util.UUID;
 @Tag(name = "Bookings", description = "Seat reservations: create, query and cancel bookings.")
 public class BookingController {
 
-    private static final String NO_SEATS_MESSAGE = "El viaje ya no tiene asientos disponibles.";
+    private static final String NO_SEATS_MESSAGE = "The trip has no seats available.";
     private static final String PASSENGER_HEADER_DOC =
             "Passenger identifier (UUID) delivered already validated by the API Gateway";
 
@@ -118,7 +118,7 @@ public class BookingController {
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Booking not found: 3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}"))),
             @ApiResponse(responseCode = "409", description = "The booking cannot be cancelled from its current status (boarded, in_progress or completed)",
                     content = @Content(schema = @Schema(implementation = ErrorResponse.class),
-                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"La reserva ya no puede cancelarse en su estado actual: BOARDED\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}")))
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"The booking cannot be cancelled from its current status: BOARDED\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}")))
     })
     @PostMapping("/{bookingId}/cancel")
     public ResponseEntity<CancellationResponse> cancel(

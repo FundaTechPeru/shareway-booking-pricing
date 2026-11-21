@@ -16,7 +16,7 @@ public record ErrorResponse(
         int status,
         @Schema(description = "HTTP reason phrase", example = "Conflict")
         String error,
-        @Schema(description = "Human-readable explanation", example = "El viaje ya no tiene asientos disponibles.")
+        @Schema(description = "Human-readable explanation", example = "The trip has no seats available.")
         String message,
         @Schema(description = "Request path that produced the error", example = "/api/v1/bookings")
         String path) {

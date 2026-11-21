@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @ActiveProfiles("test")
 class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
 
-    private static final String NO_SEATS_MESSAGE = "El viaje ya no tiene asientos disponibles.";
+    private static final String NO_SEATS_MESSAGE = "The trip has no seats available.";
     private static final UUID PASSENGER_ID = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
 
     @Autowired

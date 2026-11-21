@@ -160,7 +160,7 @@ public class BookingTransactionalService {
         if (status != BookingStatus.REQUESTED && status != BookingStatus.GROUPED
                 && status != BookingStatus.CONFIRMED) {
             throw new BookingCannotBeCancelledException(
-                    "La reserva ya no puede cancelarse en su estado actual: " + status);
+                    "The booking cannot be cancelled from its current status: " + status);
         }
 
         BigDecimal penaltyAmount = createLateCancellationPenaltyIfAny(booking);

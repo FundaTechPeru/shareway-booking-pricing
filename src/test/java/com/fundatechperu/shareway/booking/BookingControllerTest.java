@@ -29,11 +29,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * HTTP contract of POST /api/v1/bookings and GET /api/v1/bookings/{id}: 202 + Location, 400, 404 and
- * the 409 body with "El viaje ya no tiene asientos disponibles."
+ * the 409 body with "The trip has no seats available."
  */
 class BookingControllerTest {
 
-    private static final String NO_SEATS_MESSAGE = "El viaje ya no tiene asientos disponibles.";
+    private static final String NO_SEATS_MESSAGE = "The trip has no seats available.";
     private static final UUID PASSENGER_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final String VALID_BODY = """
             {"groupId":"11111111-1111-1111-1111-111111111111",
@@ -174,14 +174,14 @@ class BookingControllerTest {
         UUID bookingId = UUID.randomUUID();
         when(bookingService.cancel(eq(bookingId), eq(PASSENGER_ID)))
                 .thenThrow(new BookingCannotBeCancelledException(
-                        "La reserva ya no puede cancelarse en su estado actual: BOARDED"));
+                        "The booking cannot be cancelled from its current status: BOARDED"));
 
         mockMvc.perform(post("/api/v1/bookings/" + bookingId + "/cancel")
                         .header("X-User-Id", PASSENGER_ID.toString()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.status").value(409))
                 .andExpect(jsonPath("$.message")
-                        .value("La reserva ya no puede cancelarse en su estado actual: BOARDED"));
+                        .value("The booking cannot be cancelled from its current status: BOARDED"));
     }
 
     @Test

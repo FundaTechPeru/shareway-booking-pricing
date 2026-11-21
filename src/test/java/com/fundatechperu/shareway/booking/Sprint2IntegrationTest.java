@@ -47,7 +47,7 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static final BigDecimal ESTIMATED_12KM = new BigDecimal("21.34");   // (5 + 1.2*12) * 1.10
     private static final BigDecimal FINAL_20KM = new BigDecimal("31.90");       // (5 + 1.2*20) * 1.10
-    private static final String LATE_CANCEL_MESSAGE_PREFIX = "La reserva ya no puede cancelarse en su estado actual";
+    private static final String LATE_CANCEL_MESSAGE_PREFIX = "The booking cannot be cancelled from its current status";
 
     @Autowired
     private TestRestTemplate rest;
