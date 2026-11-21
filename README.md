@@ -82,7 +82,7 @@ $env:SERVER_PORT = "8080"
 
 ## API
 
-- `POST /api/v1/bookings` (body `groupId` + `requestId`; cabeceras `X-User-Id` e `Idempotency-Key`) returns `202 Accepted` with `Location` and `{bookingId, status: REQUESTED}`. In one local transaction it holds a seat of `seat_inventories` with an optimistic lock, creates the booking in `requested`, records the `estimated` fare, starts the booking saga (`running`, `current_step=AUTHORIZE_PAYMENT`, `deadline_at=now+15min`) and publishes `SeatHeld` + `PaymentAuthorizationRequested`. Replaying the same `Idempotency-Key` returns the original booking without creating another one. `400` if `groupId`, `requestId` or `X-User-Id` is missing; `404` if the group is unknown or no fare rule is valid today; `409` with `"El viaje ya no tiene asientos disponibles."` when there are no seats or the optimistic lock keeps failing after `booking.reservation.max-attempts` retries.
+- `POST /api/v1/bookings` (body `groupId` + `requestId`; headers `X-User-Id` and `Idempotency-Key`) returns `202 Accepted` with `Location` and `{bookingId, status: REQUESTED}`. In one local transaction it holds a seat of `seat_inventories` with an optimistic lock, creates the booking in `requested`, records the `estimated` fare, starts the booking saga (`running`, `current_step=AUTHORIZE_PAYMENT`, `deadline_at=now+15min`) and publishes `SeatHeld` + `PaymentAuthorizationRequested`. Replaying the same `Idempotency-Key` returns the original booking without creating another one. `400` if `groupId`, `requestId` or `X-User-Id` is missing; `404` if the group is unknown or no fare rule is valid today; `409` with `"The trip has no seats available."` when there are no seats or the optimistic lock keeps failing after `booking.reservation.max-attempts` retries.
 - `GET /api/v1/bookings/{bookingId}` returns `200 {bookingId, status}` (status in uppercase) or `404`.
 - `POST /api/v1/bookings/{bookingId}/cancel` cancels a booking and releases its seat. Only bookings in `REQUESTED`, `GROUPED` or `CONFIRMED` can be cancelled; `boarded`, `in_progress` or `completed` answer `409` with a clear message, cancelling twice answers `200` without changes and an unknown booking answers `404`. The passenger comes from `X-User-Id`: the owner gets `200 {bookingId, status: CANCELLED, penaltyAmount, currency}` (`penaltyAmount` is `null` when there is no penalty), a missing header `400` and another passenger `404`. A cancellation closer than 30 minutes to the departure also creates a `penalties` row (20 % of the estimated fare, minimum 1.00, reason `LATE_CANCELLATION`).
 - `POST /dev/events` (only with the `dev` profile) publishes a simulated event through the same in-memory bus; see [Simulated events](#simulated-events-dev-profile).
@@ -93,9 +93,36 @@ $env:SERVER_PORT = "8080"
 - OpenAPI document: `/v3/api-docs`
 - Health: `GET /actuator/health` with liveness and readiness (`/actuator/health/liveness`, `/actuator/health/readiness`) and `GET /actuator/info`. Only `health` and `info` are exposed; no other actuator endpoint exists.
 
-This service performs no authentication: the passenger comes from the `X-User-Id` header, which the API Gateway validates before forwarding it. `POST /api/v1/bookings` answers `400` when that header is missing. No JWT scheme is exposed in the OpenAPI document.
+This service currently performs no authentication: the passenger comes from the `X-User-Id` header, which the API Gateway validates before forwarding it. `POST /api/v1/bookings` answers `400` when that header is missing. No JWT scheme is exposed in the OpenAPI document.
+
+**Security compatibility finding:** this service does not read `JWT_SECRET`, `Authorization`, or HS256 claims (`sub` / `role`). It therefore cannot revalidate the gateway JWT today. If the implementation must revalidate tokens internally, an explicit change is needed first: add HS256 verification with `JWT_SECRET`, define mapping of `sub` to `X-User-Id`, define the accepted `role` values, and update security tests. No such change was made.
 
 > **Nota:** Este servicio debe quedar detrás del API Gateway; no exponerlo directamente a internet.
+
+## Gateway integration
+
+Set the API Gateway upstream for Booking & Pricing to the Render service URL, for example:
+
+```text
+UPSTREAM_BOOKING_PRICING=https://<shareway-booking-pricing>.onrender.com
+```
+
+Replace `<shareway-booking-pricing>.onrender.com` with the actual public Render hostname. The gateway must keep the `/api/v1` prefix and forward the validated `Authorization` header unchanged; this service does not currently validate JWTs itself.
+
+Final service routes:
+
+- `POST /api/v1/bookings`
+- `GET /api/v1/bookings/{bookingId}`
+- `POST /api/v1/bookings/{bookingId}/cancel`
+- `GET /api/v1/fares/estimate?groupId={uuid}`
+- `GET /api/v1/fare-rules`
+- `GET /api/v1/fare-rules/{id}`
+
+Public operational routes remain `/swagger-ui.html`, `/v3/api-docs` and `/actuator/health`. The Docker Healthcheck uses `/actuator/health`.
+
+## Design differences
+
+The implementation diagrams should not represent these as deployed components: there is no RabbitMQ or other durable message broker, no transactional Outbox, and no Redis cache. Events are dispatched synchronously in-memory inside the JVM and are lost after process restart or crash; PostgreSQL is the persistence and optimistic-lock source; and Flyway owns schema creation/migrations.
 
 ## Fare estimate assumptions
 
