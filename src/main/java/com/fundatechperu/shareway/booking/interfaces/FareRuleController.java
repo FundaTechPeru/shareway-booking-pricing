@@ -41,7 +41,8 @@ public class FareRuleController {
     @Operation(summary = "List fare rules",
             description = "Returns every fare rule known to the service, ordered by id.")
     @ApiResponses(@ApiResponse(responseCode = "200", description = "Rules listed",
-            content = @Content(schema = @Schema(implementation = FareRuleResponse.class),
+            content = @Content(mediaType = "application/json",
+                    schema = @Schema(implementation = FareRuleResponse.class),
                     examples = @ExampleObject(value = "[" + RULE_EXAMPLE + "]"))))
     @GetMapping
     public List<FareRuleResponse> find() {
@@ -52,13 +53,16 @@ public class FareRuleController {
             description = "Returns one rule with its base amount, amount per km, platform fee and validity range.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Rule found",
-                    content = @Content(schema = @Schema(implementation = FareRuleResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = FareRuleResponse.class),
                             examples = @ExampleObject(value = RULE_EXAMPLE))),
             @ApiResponse(responseCode = "400", description = "id is not a number",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"Type mismatch for path variable 'id'\",\"path\":\"/api/v1/fare-rules/abc\"}"))),
             @ApiResponse(responseCode = "404", description = "Unknown rule id",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Fare rule not found: 99\",\"path\":\"/api/v1/fare-rules/99\"}")))
     })
     @GetMapping("/{id}")

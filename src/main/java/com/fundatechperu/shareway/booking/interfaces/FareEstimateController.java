@@ -39,13 +39,16 @@ public class FareEstimateController {
                     + "The estimate does not create a fares row.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Fare estimate computed",
-                    content = @Content(schema = @Schema(implementation = FareEstimateResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = FareEstimateResponse.class),
                             examples = @ExampleObject(value = "{\"amount\":21.34,\"currency\":\"PEN\",\"ruleVersion\":1}"))),
             @ApiResponse(responseCode = "400", description = "groupId is missing or is not a UUID",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"Type mismatch for request parameter 'groupId'\",\"path\":\"/api/v1/fares/estimate\"}"))),
             @ApiResponse(responseCode = "404", description = "Group not found in seat inventories, or no fare rule is valid today",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"No fare rule valid on 2026-11-20\",\"path\":\"/api/v1/fares/estimate\"}")))
     })
     @GetMapping

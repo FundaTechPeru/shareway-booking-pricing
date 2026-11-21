@@ -49,10 +49,12 @@ public class DevEventController {
                     + "Supported types: " + SUPPORTED_TYPES + ".")
     @ApiResponses({
             @ApiResponse(responseCode = "202", description = "Event dispatched to the in-memory bus",
-                    content = @Content(schema = @Schema(implementation = DevEventResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = DevEventResponse.class),
                             examples = @ExampleObject(value = "{\"type\":\"PaymentAuthorized\",\"published\":true}"))),
             @ApiResponse(responseCode = "400", description = "Unsupported type or a required field is missing",
-                    content = @Content(schema = @Schema(implementation =
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation =
                             com.fundatechperu.shareway.booking.infrastructure.web.ErrorResponse.class),
                             examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"bookingId is required for PaymentAuthorized\",\"path\":\"/dev/events\"}")))
     })
