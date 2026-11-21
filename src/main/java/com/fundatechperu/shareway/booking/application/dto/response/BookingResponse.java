@@ -6,7 +6,7 @@ import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
 import java.util.UUID;
 
 /**
- * POST /bookings and GET /bookings/{id} body: {bookingId, status} with the status
+ * POST /api/v1/bookings and GET /api/v1/bookings/{id} body: {bookingId, status} with the status
  * in uppercase (REQUESTED, ...) as required by the API contract.
  */
 public record BookingResponse(UUID bookingId, BookingStatus status) {

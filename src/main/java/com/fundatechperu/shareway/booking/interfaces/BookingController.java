@@ -25,11 +25,11 @@ import java.util.UUID;
  * API Gateway: this service performs no authentication of its own.
  */
 @RestController
-@RequestMapping("/bookings")
+@RequestMapping("/api/v1/bookings")
 @Tag(name = "Bookings", description = "Seat reservations: create, query and cancel bookings.")
 public class BookingController {
 
-    private static final String NO_SEATS_MESSAGE = "El viaje ya no tiene asientos disponibles.";
+    private static final String NO_SEATS_MESSAGE = "The trip has no seats available.";
     private static final String PASSENGER_HEADER_DOC =
             "Passenger identifier (UUID) delivered already validated by the API Gateway";
 
@@ -47,18 +47,32 @@ public class BookingController {
                     + "Idempotency-Key returns the original booking instead of creating a new one.")
     @ApiResponses({
             @ApiResponse(responseCode = "202", description = "Booking accepted, or replayed via Idempotency-Key",
-                    content = @Content(schema = @Schema(implementation = BookingResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = BookingResponse.class),
                             examples = @ExampleObject(value = "{\"bookingId\":\"3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"status\":\"REQUESTED\"}"))),
             @ApiResponse(responseCode = "400", description = "groupId, requestId or X-User-Id is missing",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"X-User-Id header is required\",\"path\":\"/api/v1/bookings\"}"))),
             @ApiResponse(responseCode = "404", description = "Group not found in seat inventories, or no fare rule valid today",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Group not found: 11111111-1111-1111-1111-111111111111\",\"path\":\"/api/v1/bookings\"}"))),
             @ApiResponse(responseCode = "409", description = NO_SEATS_MESSAGE,
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
-                            examples = @ExampleObject(value = "{\"status\":409,\"message\":\"" + NO_SEATS_MESSAGE + "\",\"timestamp\":\"2026-10-25T10:15:30\"}")))
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"" + NO_SEATS_MESSAGE + "\",\"path\":\"/api/v1/bookings\"}")))
     })
     @PostMapping
     public ResponseEntity<BookingResponse> createBooking(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    description = "Booking to request: the trip group to join and the caller-generated replay key",
+                    required = true,
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = CreateBookingRequest.class),
+                            examples = @ExampleObject(value = """
+                                    {"groupId":"11111111-1111-1111-1111-111111111111",
+                                     "requestId":"22222222-2222-2222-2222-222222222222"}""")))
             @Valid @RequestBody CreateBookingRequest request,
             @Parameter(description = PASSENGER_HEADER_DOC, required = true,
                     example = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
@@ -68,7 +82,7 @@ public class BookingController {
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         BookingResponse response = bookingService.createBooking(request, passengerId, idempotencyKey);
         return ResponseEntity.accepted()
-                .location(URI.create("/bookings/" + response.bookingId()))
+                .location(URI.create("/api/v1/bookings/" + response.bookingId()))
                 .body(response);
     }
 
@@ -76,9 +90,13 @@ public class BookingController {
             description = "Returns the booking with its status in uppercase (REQUESTED, GROUPED, ...).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Booking found",
-                    content = @Content(schema = @Schema(implementation = BookingResponse.class))),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = BookingResponse.class),
+                            examples = @ExampleObject(value = "{\"bookingId\":\"3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"status\":\"CONFIRMED\"}"))),
             @ApiResponse(responseCode = "404", description = "Unknown booking id",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Booking not found: 3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\"}")))
     })
     @GetMapping("/{bookingId}")
     public ResponseEntity<BookingResponse> findById(
@@ -97,15 +115,21 @@ public class BookingController {
                     + "value answers 404 and a missing header answers 400.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Booking cancelled (idempotent)",
-                    content = @Content(schema = @Schema(implementation = CancellationResponse.class),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = CancellationResponse.class),
                             examples = @ExampleObject(value = "{\"bookingId\":\"3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"status\":\"CANCELLED\",\"penaltyAmount\":4.27,\"currency\":\"PEN\"}"))),
             @ApiResponse(responseCode = "400", description = "X-User-Id header is missing",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":400,\"error\":\"Bad Request\",\"message\":\"X-User-Id header is required\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}"))),
             @ApiResponse(responseCode = "404", description = "Unknown booking id, or the booking belongs to another passenger",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":404,\"error\":\"Not Found\",\"message\":\"Booking not found: 3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}"))),
             @ApiResponse(responseCode = "409", description = "The booking cannot be cancelled from its current status (boarded, in_progress or completed)",
-                    content = @Content(schema = @Schema(implementation = ErrorResponse.class),
-                            examples = @ExampleObject(value = "{\"status\":409,\"message\":\"La reserva ya no puede cancelarse en su estado actual: BOARDED\",\"timestamp\":\"2026-10-25T10:15:30\"}")))
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = ErrorResponse.class),
+                            examples = @ExampleObject(value = "{\"timestamp\":\"2026-11-20T10:15:30\",\"status\":409,\"error\":\"Conflict\",\"message\":\"The booking cannot be cancelled from its current status: BOARDED\",\"path\":\"/api/v1/bookings/3f0f6a3c-2a3b-4c6d-9d1e-0a1b2c3d4e5f/cancel\"}")))
     })
     @PostMapping("/{bookingId}/cancel")
     public ResponseEntity<CancellationResponse> cancel(

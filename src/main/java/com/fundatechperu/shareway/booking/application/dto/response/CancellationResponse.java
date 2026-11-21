@@ -6,7 +6,7 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * POST /bookings/{id}/cancel body: {bookingId, status, penaltyAmount, currency} with the
+ * POST /api/v1/bookings/{id}/cancel body: {bookingId, status, penaltyAmount, currency} with the
  * status in uppercase. penaltyAmount is null when the cancellation was not late (no
  * penalty was created) or when the booking was already cancelled.
  */

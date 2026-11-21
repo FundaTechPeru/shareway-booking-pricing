@@ -41,13 +41,13 @@ import java.util.UUID;
  * Local transactions of the booking lifecycle (each one atomic, retried by its caller on
  * optimistic-lock failures):
  *
- * 1. createOnce (POST /bookings): idempotent replay returns the existing booking untouched;
+ * 1. createOnce (POST /api/v1/bookings): idempotent replay returns the existing booking untouched;
  *    otherwise one seat is held (optimistic lock via seat_inventories.version), the booking
  *    is created in REQUESTED, the estimated fare is recorded, the saga starts (running /
  *    AUTHORIZE_PAYMENT / deadline +payment timeout) and SeatHeld plus
  *    PaymentAuthorizationRequested are published.
  *
- * 2. cancelOnce (POST /bookings/{id}/cancel, Sprint 2): the owner cancels from requested,
+ * 2. cancelOnce (POST /api/v1/bookings/{id}/cancel, Sprint 2): the owner cancels from requested,
  *    grouped or confirmed. Cancelling twice is a no-op 200; boarded, in_progress or
  *    completed answer 409. The seat is released, the booking becomes cancelled, the saga is
  *    compensated and BookingCancelled is published. A cancellation closer than the penalty
@@ -160,7 +160,7 @@ public class BookingTransactionalService {
         if (status != BookingStatus.REQUESTED && status != BookingStatus.GROUPED
                 && status != BookingStatus.CONFIRMED) {
             throw new BookingCannotBeCancelledException(
-                    "La reserva ya no puede cancelarse en su estado actual: " + status);
+                    "The booking cannot be cancelled from its current status: " + status);
         }
 
         BigDecimal penaltyAmount = createLateCancellationPenaltyIfAny(booking);

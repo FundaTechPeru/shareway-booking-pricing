@@ -47,7 +47,7 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static final BigDecimal ESTIMATED_12KM = new BigDecimal("21.34");   // (5 + 1.2*12) * 1.10
     private static final BigDecimal FINAL_20KM = new BigDecimal("31.90");       // (5 + 1.2*20) * 1.10
-    private static final String LATE_CANCEL_MESSAGE_PREFIX = "La reserva ya no puede cancelarse en su estado actual";
+    private static final String LATE_CANCEL_MESSAGE_PREFIX = "The booking cannot be cancelled from its current status";
 
     @Autowired
     private TestRestTemplate rest;
@@ -447,18 +447,18 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
         headers.set("Idempotency-Key", UUID.randomUUID().toString());
         Map<String, String> payload = Map.of("groupId", groupId.toString(),
                 "requestId", UUID.randomUUID().toString());
-        return rest.postForEntity("/bookings", new HttpEntity<>(payload, headers), String.class);
+        return rest.postForEntity("/api/v1/bookings", new HttpEntity<>(payload, headers), String.class);
     }
 
     private ResponseEntity<String> getBooking(UUID bookingId) {
-        return rest.exchange("/bookings/{bookingId}", HttpMethod.GET,
+        return rest.exchange("/api/v1/bookings/{bookingId}", HttpMethod.GET,
                 new HttpEntity<>(jsonHeaders()), String.class, bookingId);
     }
 
     private ResponseEntity<String> cancel(UUID bookingId, UUID actorId) {
         HttpHeaders headers = jsonHeaders();
         headers.set("X-User-Id", actorId.toString());
-        return rest.exchange("/bookings/{bookingId}/cancel", HttpMethod.POST,
+        return rest.exchange("/api/v1/bookings/{bookingId}/cancel", HttpMethod.POST,
                 new HttpEntity<>(headers), String.class, bookingId);
     }
 

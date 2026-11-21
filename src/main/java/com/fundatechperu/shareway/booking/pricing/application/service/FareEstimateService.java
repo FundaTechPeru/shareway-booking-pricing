@@ -18,7 +18,7 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 /**
- * GET /fares/estimate: quotes a group without persisting anything.
+ * GET /api/v1/fares/estimate: quotes a group without persisting anything.
  * - 404 when the group has no seat inventory (GroupNotFoundException) or no fare rule is
  *   valid today (FareNotFoundException).
  */

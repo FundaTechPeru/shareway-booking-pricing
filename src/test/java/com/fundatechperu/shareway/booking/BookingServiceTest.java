@@ -24,12 +24,12 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * POST /bookings behaviour outside the transaction: validation (400), optimistic-lock
- * retries, and the 409 answer "El viaje ya no tiene asientos disponibles.".
+ * POST /api/v1/bookings behaviour outside the transaction: validation (400), optimistic-lock
+ * retries, and the 409 answer "The trip has no seats available.".
  */
 class BookingServiceTest {
 
-    private static final String NO_SEATS_MESSAGE = "El viaje ya no tiene asientos disponibles.";
+    private static final String NO_SEATS_MESSAGE = "The trip has no seats available.";
     private static final UUID GROUP_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID PASSENGER_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
 
