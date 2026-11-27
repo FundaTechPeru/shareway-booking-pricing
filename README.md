@@ -2,6 +2,8 @@
 
 Backend microservice for booking shared trips, reserving seats with optimistic locking, managing pricing rules, and estimating fares. `booking` and `pricing` are independent bounded contexts and communicate only through identifiers.
 
+It is the centre of the ShareWay flow: it receives the events of **Trip Planning** (groups) and **Trip Execution** (boarding and trips) on `POST /api/v1/internal/events`, and calls **Payments** (authorization, cancellation, capture) and **Trip Execution** (confirmed groups) through a transactional outbox. See [Service integration](#service-integration).
+
 ## Requirements
 
 - Java 21
@@ -9,15 +11,19 @@ Backend microservice for booking shared trips, reserving seats with optimistic l
 - PostgreSQL on `localhost:5432`
 - Development database `shareway_booking`
 
-All environment-specific configuration comes from environment variables: `DB_URL`, `DB_USER`, `DB_PASSWORD` and `SERVER_PORT`. Defaults exist **only** in the `dev` profile (`application-dev.yml`), which is also the only profile that imports the optional local `.env` file: copy `.env.example` to `.env` and set `DB_PASSWORD`. `.env` is ignored by Git and must never be committed. Environment variables supplied by the process take precedence over the file.
+All environment-specific configuration comes from environment variables: `DB_URL`, `DB_USER`, `DB_PASSWORD` and `SERVER_PORT`, plus the integration variables `JWT_SECRET`, `INTERNAL_API_KEY`, `PAYMENTS_URL`, `TRIP_EXECUTION_URL` and `OUTBOX_RELAY_ENABLED` (see [Environment variables](#environment-variables)). Defaults exist **only** in the `dev` profile (`application-dev.yml`), which is also the only profile that imports the optional local `.env` file: copy `.env.example` to `.env` and set `DB_PASSWORD`. `.env` is ignored by Git and must never be committed. Environment variables supplied by the process take precedence over the file.
 
-The `prod` profile (`application-prod.yml`) has no defaults at all, so a cloud deployment must set `SPRING_PROFILES_ACTIVE=prod` together with the four variables. For IntelliJ, either configure them under **Run Configuration -> Environment variables** or keep them in the local `.env` file and launch with the `dev` profile. The platform fee is not configurable per environment, it comes from the `fare_rules.platform_fee_pct` column of the active fare rule.
+The `prod` profile (`application-prod.yml`) has no database defaults at all, so a cloud deployment must set `SPRING_PROFILES_ACTIVE=prod` together with the four database variables, `JWT_SECRET` and `INTERNAL_API_KEY`. For IntelliJ, either configure them under **Run Configuration -> Environment variables** or keep them in the local `.env` file and launch with the `dev` profile. The platform fee is not configurable per environment, it comes from the `fare_rules.platform_fee_pct` column of the active fare rule.
 
 ```powershell
 ./mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=dev"
 ```
 
-The application uses Flyway migrations (`V1__create_booking_tables` schema plus `V2__seed_test_data`) and `spring.jpa.hibernate.ddl-auto=validate`.
+The application uses Flyway migrations and `spring.jpa.hibernate.ddl-auto=validate`:
+
+- `V1__create_booking_tables`: the booking and pricing schema.
+- `V2__seed_test_data`: the first fare rule (version 1: base 5.00, 1.20 per km, 10 % fee) and a demo group `11111111-...`. It is kept unchanged so its Flyway checksum still matches in the databases that already applied it.
+- `V3__service_integration`: the integration columns of `bookings`, `processed_events` (idempotency of the internal endpoint), `outbox_messages`, the same fare rule as a baseline (inserted only when `fare_rules` is empty, so after V2 it does nothing) and the removal of the V2 demo group when nothing references it: trip groups are opened by Trip Planning (`TripGroupOpened`) and the tests create their own data.
 
 ## Integration-test database
 
@@ -82,20 +88,28 @@ $env:SERVER_PORT = "8080"
 
 ## API
 
-- `POST /api/v1/bookings` (body `groupId` + `requestId`; headers `X-User-Id` and `Idempotency-Key`) returns `202 Accepted` with `Location` and `{bookingId, status: REQUESTED}`. In one local transaction it holds a seat of `seat_inventories` with an optimistic lock, creates the booking in `requested`, records the `estimated` fare, starts the booking saga (`running`, `current_step=AUTHORIZE_PAYMENT`, `deadline_at=now+15min`) and publishes `SeatHeld` + `PaymentAuthorizationRequested`. Replaying the same `Idempotency-Key` returns the original booking without creating another one. `400` if `groupId`, `requestId` or `X-User-Id` is missing; `404` if the group is unknown or no fare rule is valid today; `409` with `"The trip has no seats available."` when there are no seats or the optimistic lock keeps failing after `booking.reservation.max-attempts` retries.
-- `GET /api/v1/bookings/{bookingId}` returns `200 {bookingId, status}` (status in uppercase) or `404`.
-- `POST /api/v1/bookings/{bookingId}/cancel` cancels a booking and releases its seat. Only bookings in `REQUESTED`, `GROUPED` or `CONFIRMED` can be cancelled; `boarded`, `in_progress` or `completed` answer `409` with a clear message, cancelling twice answers `200` without changes and an unknown booking answers `404`. The passenger comes from `X-User-Id`: the owner gets `200 {bookingId, status: CANCELLED, penaltyAmount, currency}` (`penaltyAmount` is `null` when there is no penalty), a missing header `400` and another passenger `404`. A cancellation closer than 30 minutes to the departure also creates a `penalties` row (20 % of the estimated fare, minimum 1.00, reason `LATE_CANCELLATION`).
-- `POST /dev/events` (only with the `dev` profile) publishes a simulated event through the same in-memory bus; see [Simulated events](#simulated-events-dev-profile).
-- `GET /api/v1/fare-rules` lists the fare rules.
-- `GET /api/v1/fare-rules/{id}` retrieves one rule. The contract exposes **only GET** for fare rules: there is no `POST` and no `PUT`.
+Every `/api/v1/**` route except the internal one requires `Authorization: Bearer <token>`: an HS256 access token issued by Driver Management and signed with `JWT_SECRET` (validated with jjwt 0.12.6, as Payments, Driver Management and Trip Planning do). The caller is the `sub` claim (a UUID) and the role the `role` claim (`PASSENGER`, `DRIVER`, `ADMIN`). `X-User-Id` is no longer read. A missing, malformed, expired or foreign-signed token answers `401`; a role that may not use the operation answers `403`; both with the uniform error body.
+
+| Route | Who | Notes |
+|---|---|---|
+| `POST /api/v1/bookings` | `PASSENGER` | Body `groupId`, `requestId` and optional `paymentMethodId`; header `Idempotency-Key`. |
+| `GET /api/v1/bookings` | `PASSENGER` (own) / `ADMIN` (all) | Newest first. Other roles: `403`. |
+| `GET /api/v1/bookings/{bookingId}` | owner or `ADMIN` | Another passenger's booking answers `404`. |
+| `POST /api/v1/bookings/{bookingId}/cancel` | owner | Another passenger's booking answers `404` (no admin bypass). |
+| `GET /api/v1/fares/**`, `GET /api/v1/fare-rules/**` | any authenticated user | |
+| `POST /api/v1/internal/events` | `X-Internal-Api-Key` only | A JWT is never accepted here. |
+| `/actuator/health/**`, `/swagger-ui.html`, `/swagger-ui/**`, `/v3/api-docs/**` | public | `/actuator/info` requires a token. |
+
+- `POST /api/v1/bookings` returns `202 Accepted` with `Location` and the booking. In one local transaction it holds a seat of `seat_inventories` with an optimistic lock, creates the booking in `requested`, records the `estimated` fare (date, distance from `GroupInfoProvider` and the passengers of the group) and keeps it on the booking as `estimatedAmount`, starts the booking saga (`running`, `current_step=AUTHORIZE_PAYMENT`, `deadline_at=now+15min`), publishes `SeatHeld` + `PaymentAuthorizationRequested` and queues the payment authorization in the outbox. Replaying the same `Idempotency-Key` returns the original booking without creating another one. `400` if `groupId` or `requestId` is missing; `404` if the group is unknown or no fare rule is valid today; `409` with `"The trip has no seats available."` when there are no seats or the optimistic lock keeps failing after `booking.reservation.max-attempts` retries.
+- The booking body is `{bookingId, groupId, requestId, status, estimatedAmount, currency}` (status in uppercase) plus `boardingPin` and `qrToken` for the **owner** of a booking that is `CONFIRMED` or further (see [Boarding codes](#boarding-codes-decision)).
+- `POST /api/v1/bookings/{bookingId}/cancel` cancels a booking and releases its seat. Only bookings in `REQUESTED`, `GROUPED` or `CONFIRMED` can be cancelled; `boarded`, `in_progress` or `completed` answer `409` with a clear message, cancelling twice answers `200` without changes and an unknown booking answers `404`. The owner gets `200 {bookingId, status: CANCELLED, penaltyAmount, currency}` (`penaltyAmount` is `null` when there is no penalty). A cancellation closer than 30 minutes to the departure also creates a `penalties` row (20 % of the estimated fare, minimum 1.00, reason `LATE_CANCELLATION`). When the payment was authorized, Payments is told (`PASSENGER_CANCELLED`).
+- `POST /dev/events` (only with the `dev` profile, no token needed) publishes a simulated event through the same bus; see [Simulated events](#simulated-events-dev-profile).
+- `GET /api/v1/fare-rules` lists the fare rules; `GET /api/v1/fare-rules/{id}` retrieves one. The contract exposes **only GET** for fare rules: there is no `POST` and no `PUT`.
 - `GET /api/v1/fares/estimate?groupId=` returns `200 {amount, currency, ruleVersion}`; `404` when the group has no seat inventory or no fare rule is valid today. Read-only: nothing is persisted.
-- Swagger UI: `/swagger-ui.html`
-- OpenAPI document: `/v3/api-docs`
+- Swagger UI: `/swagger-ui.html`; OpenAPI document: `/v3/api-docs` (it documents the `bearerAuth` and `internalApiKey` schemes).
 - Health: `GET /actuator/health` with liveness and readiness (`/actuator/health/liveness`, `/actuator/health/readiness`) and `GET /actuator/info`. Only `health` and `info` are exposed; no other actuator endpoint exists.
 
-This service currently performs no authentication: the passenger comes from the `X-User-Id` header, which the API Gateway validates before forwarding it. `POST /api/v1/bookings` answers `400` when that header is missing. No JWT scheme is exposed in the OpenAPI document.
-
-**Security compatibility finding:** this service does not read `JWT_SECRET`, `Authorization`, or HS256 claims (`sub` / `role`). It therefore cannot revalidate the gateway JWT today. If the implementation must revalidate tokens internally, an explicit change is needed first: add HS256 verification with `JWT_SECRET`, define mapping of `sub` to `X-User-Id`, define the accepted `role` values, and update security tests. No such change was made.
+`JwtSecretValidator` (copied from Driver Management) refuses to start the service outside the `dev`, `test` and `local` profiles when `JWT_SECRET` is missing, shorter than 32 characters or still the development example value.
 
 > **Nota:** Este servicio debe quedar detrás del API Gateway; no exponerlo directamente a internet.
 
@@ -107,11 +121,12 @@ Set the API Gateway upstream for Booking & Pricing to the Render service URL, fo
 UPSTREAM_BOOKING_PRICING=https://<shareway-booking-pricing>.onrender.com
 ```
 
-Replace `<shareway-booking-pricing>.onrender.com` with the actual public Render hostname. The gateway must keep the `/api/v1` prefix and forward the validated `Authorization` header unchanged; this service does not currently validate JWTs itself.
+Replace `<shareway-booking-pricing>.onrender.com` with the actual public Render hostname. The gateway must keep the `/api/v1` prefix and forward the `Authorization` header unchanged: this service validates the JWT again with the shared `JWT_SECRET`. The gateway must **not** expose `/api/v1/internal/**`: it is only for the other services, which call it with `X-Internal-Api-Key`.
 
 Final service routes:
 
 - `POST /api/v1/bookings`
+- `GET /api/v1/bookings`
 - `GET /api/v1/bookings/{bookingId}`
 - `POST /api/v1/bookings/{bookingId}/cancel`
 - `GET /api/v1/fares/estimate?groupId={uuid}`
@@ -122,7 +137,94 @@ Public operational routes remain `/swagger-ui.html`, `/v3/api-docs` and `/actuat
 
 ## Design differences
 
-The implementation diagrams should not represent these as deployed components: there is no RabbitMQ or other durable message broker, no transactional Outbox, and no Redis cache. Events are dispatched synchronously in-memory inside the JVM and are lost after process restart or crash; PostgreSQL is the persistence and optimistic-lock source; and Flyway owns schema creation/migrations.
+The implementation diagrams should not represent these as deployed components: there is no RabbitMQ or other message broker and no Redis cache. Events between services travel over HTTP: inbound on `POST /api/v1/internal/events` (idempotent by `eventId`), outbound through the transactional outbox (`outbox_messages`) sent by a scheduled relay. Inside the service the events are dispatched synchronously by the in-memory `EventPublisher`, in the transaction of the change. PostgreSQL is the persistence and optimistic-lock source, and Flyway owns schema creation/migrations.
+
+## Service integration
+
+### Environment variables of the integration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `JWT_SECRET` | none (`dev` and tests use the example value) | HS256 key shared with Driver Management. Outside `dev`, `test` and `local` the service does not start when it is missing, shorter than 32 characters or the example value. |
+| `INTERNAL_API_KEY` | none (`dev`, `test` and `local` use the shared development value) | `X-Internal-Api-Key` expected on `/api/v1/internal/**` and sent to Payments and Trip Execution. Outside `dev`, `test` and `local` the service does not start when it is missing or is the development value. |
+| `PAYMENTS_URL` | `https://shareway-payments-settlement-service.onrender.com` | Base URL of Payments & Settlement. |
+| `TRIP_EXECUTION_URL` | `https://shareway-trip-execution.onrender.com` | Base URL of Trip Execution. |
+| `OUTBOX_RELAY_ENABLED` | `true` (`false` in the `dev` profile) | Runs the outbox relay every 5 s. In `dev` the messages stay queued so nothing is sent to Render; the tests turn it off and call the relay directly. |
+
+Every HTTP call uses a 90 s connect/read timeout: free Render services can take up to a minute to wake up. An empty `PAYMENTS_URL`/`TRIP_EXECUTION_URL` falls back to the default.
+
+### Inbound: `POST /api/v1/internal/events`
+
+Only callable with `X-Internal-Api-Key` (compared in constant time; `401` when it is missing or wrong). Body: `{"eventId", "occurredAt", "type", ...fields}`.
+
+| Type | Sender | Fields | Effect |
+|---|---|---|---|
+| `TripGroupOpened` | Trip Planning | `groupId`, `capacity` | Creates the seat inventory (`available_seats = capacity`). |
+| `GroupCompleted` | Trip Planning | `groupId` | Only the `requested` bookings whose payment is authorized (saga at `WAIT_GROUP`) → `grouped`; saga → `SEARCH_DRIVER`. |
+| `ProposalAccepted` | Trip Planning | `groupId`, `driverId` | `grouped` → `confirmed` with new boarding codes; saga → `completed`; ONE `GroupConfirmed` message queued for Trip Execution. |
+| `GroupRejected` | Trip Planning | `groupId`, `driverId` | Active bookings → `cancelled` without penalty (`NO_DRIVER_AVAILABLE`), seats released, sagas compensated. |
+| `TripStarted` | Trip Execution | `groupId`, `tripId` | `boarded` → `in_progress`. |
+| `BoardingValidated` | Trip Execution | `bookingId`, `tripId` | `confirmed` → `boarded`. |
+| `TripCompleted` | Trip Execution | `groupId`, `tripId`, `driverId`, `completedAt`, `distanceKm` (may be `null`), `boardedBookingIds` | Bookings that travelled → `completed` with the `final` fare (distance of the event, or `GroupInfoProvider` when `null`); `confirmed` bookings not in `boardedBookingIds` → `cancelled` (`NO_SHOW`); ONE `trip-completed` message queued for Payments. |
+| `TripCancelled` | Trip Execution | `groupId`, `tripId`, `reason` | Same as `GroupRejected`. |
+
+- **Idempotency**: the `eventId` is stored in `processed_events` in the same transaction as every change the event makes (outbox messages included). A repeated `eventId` answers `202 {"status":"DUPLICATE"}` and is not processed again.
+- **Answers**: `202 {eventId, type, status: PROCESSED | DUPLICATE}`. A valid event that changes nothing (a group without bookings, a booking in another status, an unknown booking) is also `202` and is logged, never `4xx`, because the senders treat every `4xx` as a definitive failure. An unknown `type` or a missing/malformed field is `400`. If the event cannot be processed right now (for example a lock conflict that persists after the retries) nothing is committed and the answer is `503`, so the sender retries.
+- The conversion of the JSON into events (`IntegrationEventParser`) is shared with `POST /dev/events`, which stays for the `dev` profile only.
+
+### Outbound: transactional outbox
+
+Every call to another service is stored in `outbox_messages` **in the transaction of the change that produced it**, so it exists if and only if that change was committed. `OutboxRelay` (scheduled every 5 s while `OUTBOX_RELAY_ENABLED=true`) sends the pending messages in the order they were stored (`sequence_number`), with the `X-Internal-Api-Key` header:
+
+- `2xx`: done.
+- Timeout, connection error, `3xx`, `5xx`, `401`, `408` or `429`: retried with exponential backoff (5 s doubling, at most 5 minutes). The batch **stops** there so no later message overtakes it.
+- Any other `4xx`: the message is marked failed (`failed_at`, `last_error`) and the batch goes on.
+
+| Message | Request | Special answers |
+|---|---|---|
+| Payment authorization (on booking creation) | `POST {PAYMENTS_URL}/api/v1/internal/payments/authorizations` `{bookingId, passengerId, paymentMethodId?, amount, currency: "PEN"}`. `paymentMethodId` is omitted when the passenger did not send one, so Payments uses the passenger's most recent active card. | `200`/`201`: `PaymentAuthorized` is published locally (payment recorded, saga → `WAIT_GROUP`). `402`, `404` or `422`: `PaymentAuthorizationFailed` is published locally with Payments' message (booking cancelled, `PAYMENT_FAILED`) and the message is settled. |
+| Booking cancelled (when the payment had been authorized) | `POST {PAYMENTS_URL}/api/v1/internal/events/booking-cancelled` `{bookingId, reason, cancelledAt, scheduledDepartureAt}` (`DepartureTimeProvider`). `reason`: `PASSENGER_CANCELLED` (the passenger), `NO_SHOW` (did not board) or `NO_DRIVER_AVAILABLE` (timeout, rejected group, cancelled trip). | `404`: counts as done. |
+| Group confirmed (on `ProposalAccepted`, when at least one booking was confirmed) | `POST {TRIP_EXECUTION_URL}/api/internal/grupos-confirmados` `{"idEvento", "grupoId", "conductorId", "pasajeros": [{"reservaId", "pasajeroId", "codigoHash", "pinHash"}]}` with `codigoHash` = lowercase hexadecimal SHA-256 of the QR token and `pinHash` = lowercase hexadecimal SHA-256 of the PIN. | |
+| Trip completed (on `TripCompleted`, when a completed booking has an authorized payment) | `POST {PAYMENTS_URL}/api/v1/internal/events/trip-completed` `{tripId, driverId, completedAt, bookings: [{bookingId, finalAmount}]}` with `finalAmount = min(final fare, authorized amount)`: Payments refuses to capture more than it authorized. | |
+
+If a booking is cancelled while its authorization is still queued, the authorization goes out anyway; when Payments authorizes it, `PaymentAuthorizedHandler` sees the cancelled booking and queues the booking-cancelled message so the money is released.
+
+The relay runs in one JVM (Render runs a single instance). With several instances the same message could be sent twice; the receivers are idempotent (Payments by `bookingId`/`tripId`, Trip Execution by `grupoId`).
+
+### Complete flow
+
+```mermaid
+sequenceDiagram
+    participant TP as Trip Planning
+    participant P as Passenger
+    participant B as Booking & Pricing
+    participant PAY as Payments
+    participant TE as Trip Execution
+    TP->>B: TripGroupOpened {groupId, capacity}
+    P->>B: POST /api/v1/bookings (Bearer PASSENGER)
+    B->>B: seat held, booking requested, estimate, saga AUTHORIZE_PAYMENT
+    B->>PAY: outbox: authorizations {amount}
+    PAY-->>B: 201 -> PaymentAuthorized (saga WAIT_GROUP)
+    TP->>B: GroupCompleted -> grouped (saga SEARCH_DRIVER)
+    TP->>B: ProposalAccepted -> confirmed, PIN + QR (saga completed)
+    B->>TE: outbox: grupos-confirmados {codigoHash, pinHash}
+    P->>B: GET /api/v1/bookings/{id} -> boardingPin, qrToken
+    TE->>B: BoardingValidated -> boarded
+    TE->>B: TripStarted -> in_progress
+    TE->>B: TripCompleted -> completed (final fare), no-shows cancelled
+    B->>PAY: outbox: trip-completed {finalAmount <= authorized}
+    B->>PAY: outbox: booking-cancelled {NO_SHOW}
+    Note over B,PAY: GroupRejected / TripCancelled / timeouts cancel with NO_DRIVER_AVAILABLE
+```
+
+### Boarding codes (decision)
+
+On `ProposalAccepted` each booking gets a 6-digit PIN and a random QR token. They are stored **twice**:
+
+- `boarding_pin` and `qr_token` (new in V3), in clear, because the passenger must show one of them to the driver when boarding and the app reads them from `GET /api/v1/bookings/{id}` (and the list). They are returned **only to the owner** of the booking and only once it is `CONFIRMED` or further; an admin never gets them and they are never logged.
+- `pin_hash` (BCrypt) and `qr_token_hash` (SHA-256), as before.
+
+Trip Execution, which validates the boarding, only receives the SHA-256 of both codes. Keeping the clear codes is a deliberate trade-off: without them the passenger could not see the codes again after the confirmation (there is no notification service yet). The codes are short-lived (one trip) and only useful together with the trip they belong to.
 
 ## Fare estimate assumptions
 
@@ -142,35 +244,37 @@ The implementation diagrams should not represent these as deployed components: t
 sequenceDiagram
     Passenger->>Booking: POST /api/v1/bookings
     Booking->>Booking: saga running / AUTHORIZE_PAYMENT (deadline +15 min)
-    Booking-->>Payment Provider: PaymentAuthorizationRequested
-    Payment Provider-->>Booking: PaymentAuthorized (simulated via POST /dev/events)
+    Booking-->>Payments: outbox: payment authorization
+    Payments-->>Booking: 200/201 -> PaymentAuthorized (402/404/422 -> PaymentAuthorizationFailed)
     Booking->>Booking: saga WAIT_GROUP (still running)
     Note over Booking: PaymentAuthorizationFailed → compensation:
     Booking->>Booking: booking cancelled + seat released
     Booking->>Booking: saga compensated + BookingCancelled published
 ```
 
-Events travel through the `EventPublisher` interface with an in-memory implementation (`InMemoryEventPublisher`): each publish dispatches synchronously to every registered `EventHandler` that supports the event type.
+Events travel through the `EventPublisher` interface with an in-memory implementation (`InMemoryEventPublisher`): each publish dispatches synchronously to every registered `EventHandler` that supports the event type, inside the caller's transaction. The events of other services arrive on `POST /api/v1/internal/events`; `PaymentAuthorized` and `PaymentAuthorizationFailed` are published by the outbox relay from Payments' answer.
 
 | Event | Handler | Effect (one local transaction each) |
 |---|---|---|
 | `TripGroupOpened` | `TripGroupOpenedHandler` | Creates the `seat_inventory` (`available_seats = capacity`). Re-delivery is a no-op. |
-| `PaymentAuthorized` | `PaymentAuthorizedHandler` | Saga advances to `WAIT_GROUP` and stays `running` (deadline +`BOOKING_SAGA_GROUP_TIMEOUT_MINUTES`). Ignored if the saga already finished. |
-| `PaymentAuthorizationFailed` | `PaymentAuthorizationFailedHandler` | Compensates: booking → `cancelled`, seat released (`available_seats + 1`), saga → `compensated`, publishes `BookingCancelled`. Re-delivery does not release a second seat. |
-| `GroupCompleted` | `GroupCompletedHandler` | `requested` bookings of the group → `grouped`; running saga → `SEARCH_DRIVER` (deadline +`BOOKING_SAGA_DRIVER_TIMEOUT_MINUTES`). |
-| `ProposalAccepted` | `ProposalAcceptedHandler` | `grouped` bookings → `confirmed`: generates PIN + QR token, stores only their hashes, publishes `BookingConfirmed` once with the clear codes and completes the saga. |
+| `PaymentAuthorized` | `PaymentAuthorizedHandler` | Records the payment on the booking; saga advances to `WAIT_GROUP` and stays `running` (deadline +`BOOKING_SAGA_GROUP_TIMEOUT_MINUTES`). Ignored if the saga already finished; if the booking was cancelled meanwhile, Payments is asked to release the authorization. |
+| `PaymentAuthorizationFailed` | `PaymentAuthorizationFailedHandler` | Compensates: booking → `cancelled` (`PAYMENT_FAILED`), seat released (`available_seats + 1`), saga → `compensated`, publishes `BookingCancelled`. Re-delivery does not release a second seat. |
+| `GroupCompleted` | `GroupCompletedHandler` | `requested` bookings of the group whose saga is at `WAIT_GROUP` (payment authorized) → `grouped`; saga → `SEARCH_DRIVER` (deadline +`BOOKING_SAGA_DRIVER_TIMEOUT_MINUTES`). |
+| `ProposalAccepted` | `ProposalAcceptedHandler` | `grouped` bookings → `confirmed`: generates PIN + QR token, stores them with their hashes, publishes `BookingConfirmed` once, completes the saga and queues ONE `GroupConfirmed` message for Trip Execution. |
+| `GroupRejected` | `GroupRejectedHandler` | Active bookings of the group → `cancelled` without penalty (`NO_DRIVER_AVAILABLE`), seats released, sagas compensated, Payments told when the payment was authorized. |
+| `TripCancelled` | `TripCancelledHandler` | Same as `GroupRejected`. |
 | `RouteUpdated` | `RouteUpdatedHandler` | Recalculates the `estimated` fare of the group's active bookings with the new distance and updates the `fares` row in place. Publishes nothing in return. |
 | `BoardingValidated` | `BoardingValidatedHandler` | `confirmed` → `boarded`. |
 | `TripStarted` | `TripStartedHandler` | `boarded` bookings of the group → `in_progress`. |
-| `TripCompleted` | `TripCompletedHandler` | `in_progress` bookings → `completed`: prices the `final` fare with the real distance (never duplicated) and publishes `FinalFareCalculated`. |
+| `TripCompleted` | `TripCompletedHandler` | Bookings that travelled → `completed`: prices the `final` fare with the real distance (or `GroupInfoProvider`'s when `null`; never duplicated) and publishes `FinalFareCalculated`; `confirmed` bookings that did not board → `cancelled` (`NO_SHOW`); queues ONE `trip-completed` message with the capped amounts. |
 
 Published by `POST /api/v1/bookings`: `SeatHeld` and `PaymentAuthorizationRequested`. Published by the lifecycle (Sprint 2): `BookingConfirmed` (confirmation) and `FinalFareCalculated` (closing); `BookingCancelled` is published by the cancellation, the rejected payment and the saga timeout job.
 
-Events live only in this JVM process and are lost if the application stops during processing; a durable Event Bus with retries and an Outbox is future work.
+Local events are processed in the transaction of the change that publishes them, so a crash rolls both back; inbound events are retried by their sender (no `processed_events` row is left behind) and outbound calls survive in the outbox.
 
 ### Simulated events (dev profile)
 
-To exercise the handlers by hand, start the application with the `dev` profile and call `POST /dev/events` (the controller does not exist in any other profile):
+To exercise the handlers by hand, start the application with the `dev` profile and call `POST /dev/events` (the controller does not exist in any other profile). It uses the same conversion as the internal endpoint, but `eventId` and `occurredAt` are optional, the payment and route events can also be simulated, nothing is recorded in `processed_events`, and only the fields the handlers need are required:
 
 ```powershell
 ./mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=dev"
@@ -179,7 +283,7 @@ To exercise the handlers by hand, start the application with the `dev` profile a
 ```bash
 # open a group (creates seat_inventories with 4 seats)
 curl -X POST localhost:8080/dev/events -H "Content-Type: application/json" \
-  -d '{"type":"TripGroupOpened","groupId":"11111111-1111-1111-1111-111111111111","capacity":4}'
+  -d '{"type":"TripGroupOpened","groupId":"7a2b3c4d-5e6f-4a1b-9c8d-7e6f5a4b3c2d","capacity":4}'
 
 # happy path: payment authorized -> saga WAIT_GROUP
 curl -X POST localhost:8080/dev/events -H "Content-Type: application/json" \
@@ -201,10 +305,20 @@ curl -X POST localhost:8080/dev/events -H "Content-Type: application/json" \
 curl -X POST localhost:8080/dev/events -H "Content-Type: application/json" \
   -d '{"type":"TripStarted","groupId":"<group-id>"}'
 curl -X POST localhost:8080/dev/events -H "Content-Type: application/json" \
-  -d '{"type":"TripCompleted","groupId":"<group-id>","distanceKm":18}'
+  -d '{"type":"TripCompleted","groupId":"<group-id>","distanceKm":18,"boardedBookingIds":["<booking-id>"]}'
+curl -X POST localhost:8080/dev/events -H "Content-Type: application/json" \
+  -d '{"type":"GroupRejected","groupId":"<group-id>"}'
 ```
 
-Supported `type` values: `TripGroupOpened`, `PaymentAuthorized`, `PaymentAuthorizationFailed`, `GroupCompleted`, `ProposalAccepted`, `RouteUpdated`, `BoardingValidated`, `TripStarted`, `TripCompleted`. `400` for an unsupported `type` or missing required fields; `404` for an unknown `bookingId`/`groupId` (raised while handling).
+The same events through the internal endpoint (any profile):
+
+```bash
+curl -X POST localhost:8080/api/v1/internal/events -H "Content-Type: application/json" \
+  -H "X-Internal-Api-Key: $INTERNAL_API_KEY" \
+  -d '{"eventId":"<uuid>","occurredAt":"2026-11-27T15:00:00Z","type":"GroupCompleted","groupId":"<group-id>"}'
+```
+
+Supported `type` values: `TripGroupOpened`, `PaymentAuthorized`, `PaymentAuthorizationFailed`, `GroupCompleted`, `ProposalAccepted`, `GroupRejected`, `RouteUpdated`, `BoardingValidated`, `TripStarted`, `TripCompleted`, `TripCancelled`. `400` for an unsupported `type` or missing required fields; an unknown `bookingId`/`groupId` changes nothing.
 
 ## Sprint 2
 
@@ -233,12 +347,14 @@ A re-delivered event, or one that targets a booking already in that state or fur
 
 | Event | Payload | Effect |
 |---|---|---|
-| `GroupCompleted` | `{groupId}` | `requested` bookings → `grouped`; running saga → `SEARCH_DRIVER` |
+| `GroupCompleted` | `{groupId}` | `requested` bookings with authorized payment → `grouped`; saga → `SEARCH_DRIVER` |
 | `ProposalAccepted` | `{groupId, driverId}` | `grouped` bookings → `confirmed` (see Confirmation); saga → `completed` |
-| `RouteUpdated` | `{groupId, distanceKm}` | Recalculates the `estimated` fare of the group's active bookings and updates the `fares` row in place |
-| `BoardingValidated` | `{bookingId}` | `confirmed` → `boarded` |
-| `TripStarted` | `{groupId}` | `boarded` bookings → `in_progress` |
-| `TripCompleted` | `{groupId, distanceKm}` | `in_progress` → `completed` (see Closing) |
+| `RouteUpdated` | `{groupId, distanceKm}` | Recalculates the `estimated` fare of the group's active bookings and updates the `fares` row in place (dev only) |
+| `BoardingValidated` | `{bookingId, tripId}` | `confirmed` → `boarded` |
+| `TripStarted` | `{groupId, tripId}` | `boarded` bookings → `in_progress` |
+| `TripCompleted` | `{groupId, tripId, driverId, completedAt, distanceKm, boardedBookingIds}` | travelled bookings → `completed` (see Closing); no-shows cancelled |
+
+The integration events are described in [Service integration](#service-integration).
 
 ### Published events
 
@@ -249,11 +365,11 @@ A re-delivered event, or one that targets a booking already in that state or fur
 
 ### Confirmation
 
-On `ProposalAccepted` each grouped booking generates a 6-digit PIN and a random QR token (`BoardingCodeGenerator`, `SecureRandom`). `bookings` stores **only their hashes**: BCrypt for `pin_hash`, SHA-256 for `qr_token_hash`. The clear values travel once inside `BookingConfirmed` and are **never** returned by the API nor written to any log.
+On `ProposalAccepted` each grouped booking generates a 6-digit PIN and a random QR token (`BoardingCodeGenerator`, `SecureRandom`). `bookings` stores their hashes (BCrypt for `pin_hash`, SHA-256 for `qr_token_hash`) and, since V3, the clear values, returned only to the owner of the booking (see [Boarding codes](#boarding-codes-decision)). They are never written to any log.
 
 ### Closing
 
-On `TripCompleted` the final fare is priced with the **real** distance carried by the event, the same `FarePolicy` strategy and the fare rule valid that day. It is stored in `fares` with `fare_type = final` (UNIQUE with `booking_id`: a re-delivery never duplicates it) and `FinalFareCalculated` is published with the amount, currency and rule version.
+On `TripCompleted` the final fare is priced with the **real** distance carried by the event (or `GroupInfoProvider`'s when it is `null`), the same `FarePolicy` strategy and the fare rule valid that day. It is stored in `fares` with `fare_type = final` (UNIQUE with `booking_id`: a re-delivery never duplicates it) and `FinalFareCalculated` is published with the amount, currency and rule version.
 
 ### Cancellation and penalty
 
@@ -266,13 +382,13 @@ On `TripCompleted` the final fare is priced with the **real** distance carried b
 
 ### Saga timeouts
 
-A scheduled job (`SagaTimeoutJob`, every minute) compensates every saga still `running` whose `deadline_at` passed: booking → `cancelled`, seat released, saga → `compensated`, `BookingCancelled` published. The reason depends on the stalled step: `PAYMENT_TIMEOUT` at `AUTHORIZE_PAYMENT`, `NO_DRIVER_AVAILABLE` at `WAIT_GROUP` or `SEARCH_DRIVER`.
+A scheduled job (`SagaTimeoutJob`, every minute) compensates every saga still `running` whose `deadline_at` passed: booking → `cancelled`, seat released, saga → `compensated`, `BookingCancelled` published. The reason depends on the stalled step: `PAYMENT_TIMEOUT` at `AUTHORIZE_PAYMENT`, `NO_DRIVER_AVAILABLE` at `WAIT_GROUP` or `SEARCH_DRIVER` (then the payment was authorized and Payments is told with `NO_DRIVER_AVAILABLE`).
 
 ### Assumptions
 
 - **Event data**: the handler trusts the payload of each event (`distanceKm`, `driverId`, ...); events are produced by neighbouring services that own that data.
 - **Penalty**: 20 % of the fare **estimated** for the booking (not the final one), rounded `HALF_UP` to 2 decimals with a 1.00 floor; the currency is the estimate's (`PEN`).
-- **Boarding codes**: only hashes are stored (BCrypt PIN, SHA-256 token); the clear values exist solely in the `BookingConfirmed` event.
+- **Boarding codes**: stored in clear (owner only) and hashed (BCrypt PIN, SHA-256 token); Trip Execution receives the SHA-256 of both.
 - **Timeouts**: payment 15 min, group 60 min, driver search 30 min, all configurable by environment variables.
 - **Departure time**: it lives in Driver Operations & Routing, so `DepartureTimeProvider` is satisfied by `SimulatedDepartureTimeProvider` (departure = now + `BOOKING_DEPARTURE_SIMULATED_OFFSET_MINUTES`, default 120).
 - **`RouteUpdated` publishes nothing**: only the `estimated` fare row changes; no notification event is emitted in return.
@@ -282,24 +398,22 @@ A scheduled job (`SagaTimeoutJob`, every minute) compensates every saga still `r
 
 Run the verification suite with local PostgreSQL:
 
-```bash
-./mvnw -q verify
+```powershell
+./mvnw.cmd test
 ```
 
-It runs the unit tests plus three PostgreSQL-backed test classes (no Testcontainers): `SharewayBookingPricingApplicationTests` (Flyway migrations + Hibernate validation against the real schema), `BookingIntegrationTest`, which starts the real HTTP server and exercises the reservation flow end to end (last seat with 20 simultaneous requests, idempotent retry, rejected payment, `X-User-Id` contract, error codes, actuator and OpenAPI contracts), and `Sprint2IntegrationTest`, which covers the whole lifecycle:
+It runs the unit tests plus the PostgreSQL-backed test classes (no Testcontainers):
 
-1. **Full flow**: reserve → payment → group → accepted proposal → boarding → trip start → trip end, verifying every state, the stored PIN/QR hashes, the `final` fares row and the published events.
-2. **Duplicated events** change nothing and never fail.
-3. **Invalid transitions** (e.g. `TripCompleted` over a `requested` booking) are ignored without damaging the data.
-4. **Cancellation**: far from the departure no penalty and the seat returns; inside the 30-minute window the 20 % penalty (4.27 over the 21.34 estimate) is created; cancelling twice releases no second seat.
-5. **Boarded cancellation** answers `409` with a clear message.
-6. **Expired saga**: the compensation cancels the booking and releases the seat (`PAYMENT_TIMEOUT` and `NO_DRIVER_AVAILABLE`).
-7. **`RouteUpdated`** recalculates the estimated amount in place.
-8. **Concurrency**: 20 simultaneous cancellations of distinct bookings never leave `available_seats` above `capacity`.
+- `SharewayBookingPricingApplicationTests`: Flyway migrations (current version 3) + Hibernate validation against the real schema.
+- `BookingIntegrationTest`: the real HTTP server and the reservation flow end to end (last seat with 20 simultaneous requests, idempotent retry, rejected payment, error codes, actuator and OpenAPI contracts) and the **JWT** rules: `401` without a valid token (missing, expired, other secret, malformed), `403` for a wrong role, `404` for another passenger's booking, admin access, the list endpoint and the public routes.
+- `Sprint2IntegrationTest`: the whole lifecycle through the local bus (states, boarding codes for the owner only, final fare, cancellation matrix, saga timeouts, `RouteUpdated`, concurrent cancellations).
+- `InternalEventsEndpointTest`: every event type of `POST /api/v1/internal/events`, the repeated `eventId`, the missing/invalid key, the `400` cases and the `202` for events that change nothing.
+- `OutboxIntegrationTest`: the outbox against simulated Payments and Trip Execution servers (accepted and declined authorization, retry and order rules, cancellation, confirmed group with the right SHA-256 hashes, completed trip with the capped amount) and the complete flow: group opened → booking → payment authorized → group completed → proposal accepted → boarding → trip started → trip completed.
+- The Cucumber scenarios of `src/test/resources/features` (`RunCucumberTest`; they create their own trip group).
 
-The test schema is reset per class (Flyway clean + migrate, `V2` seed included) and the booking tables are truncated per test method. `DB_PASSWORD` is required (`TEST_DB_PASSWORD` too when the test database uses another password); see [Integration-test database](#integration-test-database).
+The test profile turns the outbox relay off, points `PAYMENTS_URL`/`TRIP_EXECUTION_URL` to a closed local port (the outbox test starts its own simulated servers) and signs tokens with the development example secret. The test schema is reset per class (Flyway clean + migrate) and the tables are truncated per test method: the tests create their own data. `DB_PASSWORD` is required (`TEST_DB_PASSWORD` too when the test database uses another password); see [Integration-test database](#integration-test-database).
 
-Events are dispatched by the in-memory `EventPublisher` and are lost if the application stops during processing. A durable event bus with retries and an Outbox remains future work. Payment REST integration, notification delivery (the consumer of `BookingConfirmed`) and Circuit Breaker remain pending.
+Notification delivery (the consumer of `BookingConfirmed`) and a Circuit Breaker remain pending.
 
 ## Deployment
 
@@ -312,7 +426,7 @@ copy .env.example .env   # set DB_PASSWORD first
 docker compose up --build
 ```
 
-Every sensitive value comes from `.env` (`DB_PASSWORD` is mandatory; `DB_USER` and `SERVER_PORT` are optional). `.env` is ignored by Git and by the Docker build context, so no secret reaches the repository or the image. The container receives `DB_URL`, `DB_USER`, `DB_PASSWORD`, `SPRING_PROFILES_ACTIVE=dev` and `SERVER_PORT`, and its port is mapped to the host (`8080:8080` with the example values).
+Every sensitive value comes from `.env` (`DB_PASSWORD` is mandatory; `DB_USER` and `SERVER_PORT` are optional). The stack runs the `dev` profile, so `JWT_SECRET` and `INTERNAL_API_KEY` take the development values and the outbox relay is off (the messages stay in `outbox_messages`; set `OUTBOX_RELAY_ENABLED=true` to send them). `.env` is ignored by Git and by the Docker build context, so no secret reaches the repository or the image. The container receives `DB_URL`, `DB_USER`, `DB_PASSWORD`, `SPRING_PROFILES_ACTIVE=dev` and `SERVER_PORT`, and its port is mapped to the host (`8080:8080` with the example values).
 
 Stop the stack with `docker compose down`; add `-v` to also delete the `postgres-data` volume.
 
@@ -334,6 +448,11 @@ No real values are stored in this repository: only `.env.example` carries placeh
 | `BOOKING_SAGA_PAYMENT_TIMEOUT_MINUTES`, `BOOKING_SAGA_GROUP_TIMEOUT_MINUTES`, `BOOKING_SAGA_DRIVER_TIMEOUT_MINUTES` | Optional | Saga deadlines per step | `15`, `60`, `30` |
 | `BOOKING_SAGA_TIMEOUT_JOB_ENABLED`, `BOOKING_SAGA_TIMEOUT_JOB_CRON` | Optional | Expired-saga compensation job (every minute by default) | `true`, `0 * * * * *` |
 | `BOOKING_DEPARTURE_SIMULATED_OFFSET_MINUTES` | Optional | Simulated departure (now + offset) behind `DepartureTimeProvider` | `120` |
+| `JWT_SECRET` | Yes outside `dev`/`test`/`local` | HS256 key shared with Driver Management (at least 32 characters, never the example value) | *(set it only in the environment)* |
+| `INTERNAL_API_KEY` | Yes outside `dev`/`test`/`local` | `X-Internal-Api-Key` shared by the ShareWay services (never the development value) | *(set it only in the environment)* |
+| `PAYMENTS_URL` | Optional | Base URL of Payments | `https://shareway-payments-settlement-service.onrender.com` |
+| `TRIP_EXECUTION_URL` | Optional | Base URL of Trip Execution | `https://shareway-trip-execution.onrender.com` |
+| `OUTBOX_RELAY_ENABLED` | Optional | Sends the outbox every 5 s (default `true`, `false` in `dev`) | `true` |
 
 Only `dev` supplies defaults for the first four rows; `prod` reads every value from the environment. The platform fee is not configurable: it comes from `fare_rules.platform_fee_pct`.
 
@@ -376,6 +495,7 @@ docker pull "$PREVIOUS"
 docker run -d --name shareway-booking-pricing -p 8080:8080 \
   -e SPRING_PROFILES_ACTIVE=prod \
   -e DB_URL="$DB_URL" -e DB_USER="$DB_USER" -e DB_PASSWORD="$DB_PASSWORD" -e SERVER_PORT=8080 \
+  -e JWT_SECRET="$JWT_SECRET" -e INTERNAL_API_KEY="$INTERNAL_API_KEY" \
   "$PREVIOUS"
 ```
 
@@ -387,5 +507,5 @@ With `docker-compose.yml`, point the `image:` of `booking-pricing` at `$PREVIOUS
 |---|---|
 | Versión evaluada | `pom.xml` version `0.0.1-SNAPSHOT`, Sprint 2 on top of commit `67a6867` (still uncommitted) |
 | Entorno local | `Dockerfile` (multi-stage, non-root), `docker-compose.yml` (postgres 16 + booking-pricing, healthcheck `pg_isready`), `.dockerignore`, `.env.example`, `.gitignore` ignores `.env` |
-| Ejecución | `./mvnw clean verify` → `BUILD SUCCESS`, 109 tests, 0 failures · `docker compose up --build` (requires Docker on the machine) |
+| Ejecución | `./mvnw.cmd test` → `BUILD SUCCESS`, 182 tests (6 of them Cucumber scenarios), 0 failures · `docker compose up --build` (requires Docker on the machine) |
 | Documentación (URL de Swagger) | `http://localhost:8080/swagger-ui.html` (OpenAPI: `http://localhost:8080/v3/api-docs`) |

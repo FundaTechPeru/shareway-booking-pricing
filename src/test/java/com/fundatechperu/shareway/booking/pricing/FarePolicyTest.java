@@ -11,7 +11,7 @@ import java.time.LocalDate;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * FarePolicy under test: the rule seeded by V2 (base 5.00, 1.20 per km, 10 % platform fee).
+ * FarePolicy under test: the baseline rule of V3 (base 5.00, 1.20 per km, 10 % platform fee).
  * amount = ((base_amount + amount_per_km * distance_km) / passengers) + platform fee
  */
 class FarePolicyTest {

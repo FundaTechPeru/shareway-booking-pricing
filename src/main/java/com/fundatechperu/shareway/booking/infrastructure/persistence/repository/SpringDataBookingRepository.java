@@ -17,4 +17,6 @@ public interface SpringDataBookingRepository extends JpaRepository<BookingJpaEnt
     List<BookingJpaEntity> findByGroupIdAndStatus(UUID groupId, String status);
 
     List<BookingJpaEntity> findByGroupIdAndStatusNot(UUID groupId, String status);
+
+    List<BookingJpaEntity> findByPassengerIdOrderByCreatedAtDesc(UUID passengerId);
 }

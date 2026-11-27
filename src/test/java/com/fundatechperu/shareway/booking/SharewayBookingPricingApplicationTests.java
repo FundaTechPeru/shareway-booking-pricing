@@ -10,7 +10,7 @@ class SharewayBookingPricingApplicationTests extends AbstractPostgresIntegration
 
     @Test
     void contextLoadsWithFlywayAndHibernateValidation() {
-        org.junit.jupiter.api.Assertions.assertEquals("2", flyway.info().current().getVersion().toString());
+        org.junit.jupiter.api.Assertions.assertEquals("3", flyway.info().current().getVersion().toString());
     }
 
 }

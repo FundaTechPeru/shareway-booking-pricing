@@ -8,8 +8,9 @@ import java.util.List;
 
 /**
  * In-memory {@link EventPublisher}: dispatches each event synchronously to every registered
- * {@link EventHandler} that supports it. Events live only in this JVM process; they are lost
- * if the application stops while handling them (documented limitation of phase 1).
+ * {@link EventHandler} that supports it, in the caller's transaction: if it rolls back, so does
+ * every change the handlers made. Calls to other services go through the outbox, never through
+ * this bus.
  */
 @Component
 public class InMemoryEventPublisher implements EventPublisher {

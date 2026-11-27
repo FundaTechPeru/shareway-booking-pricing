@@ -2,8 +2,10 @@ package com.fundatechperu.shareway.booking.infrastructure.persistence.repository
 
 import com.fundatechperu.shareway.booking.domain.model.Booking;
 import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
+import com.fundatechperu.shareway.booking.domain.model.CancellationReason;
 import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
 import com.fundatechperu.shareway.booking.infrastructure.persistence.entity.BookingJpaEntity;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -52,6 +54,16 @@ public class BookingRepositoryAdapter implements BookingRepository {
                 .stream().map(this::toDomain).toList();
     }
 
+    @Override
+    public List<Booking> findByPassengerId(UUID passengerId) {
+        return repository.findByPassengerIdOrderByCreatedAtDesc(passengerId).stream().map(this::toDomain).toList();
+    }
+
+    @Override
+    public List<Booking> findAll() {
+        return repository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream().map(this::toDomain).toList();
+    }
+
     private BookingJpaEntity toEntity(Booking booking) {
         BookingJpaEntity entity = new BookingJpaEntity();
         entity.setBookingId(booking.getBookingId());
@@ -62,6 +74,15 @@ public class BookingRepositoryAdapter implements BookingRepository {
         entity.setPinHash(booking.getPinHash());
         entity.setQrTokenHash(booking.getQrTokenHash());
         entity.setIdempotencyKey(booking.getIdempotencyKey());
+        entity.setBoardingPin(booking.getBoardingPin());
+        entity.setQrToken(booking.getQrToken());
+        entity.setEstimatedAmount(booking.getEstimatedAmount());
+        entity.setCurrency(booking.getCurrency());
+        entity.setPaymentId(booking.getPaymentId());
+        entity.setPaymentAuthorizedAt(booking.getPaymentAuthorizedAt());
+        entity.setCancellationReason(booking.getCancellationReason() == null
+                ? null : booking.getCancellationReason().name());
+        entity.setCancelledAt(booking.getCancelledAt());
         entity.setVersion(booking.getVersion());
         entity.setCreatedAt(booking.getCreatedAt());
         return entity;
@@ -71,6 +92,11 @@ public class BookingRepositoryAdapter implements BookingRepository {
         return Booking.restore(entity.getBookingId(), entity.getRequestId(), entity.getGroupId(),
                 entity.getPassengerId(), entity.getIdempotencyKey(),
                 BookingStatus.valueOf(entity.getStatus().toUpperCase(Locale.ROOT)),
-                entity.getPinHash(), entity.getQrTokenHash(), entity.getVersion(), entity.getCreatedAt());
+                entity.getPinHash(), entity.getQrTokenHash(), entity.getVersion(), entity.getCreatedAt())
+                .withIntegrationData(entity.getBoardingPin(), entity.getQrToken(), entity.getEstimatedAmount(),
+                        entity.getCurrency(), entity.getPaymentId(), entity.getPaymentAuthorizedAt(),
+                        entity.getCancellationReason() == null
+                                ? null : CancellationReason.valueOf(entity.getCancellationReason()),
+                        entity.getCancelledAt());
     }
 }

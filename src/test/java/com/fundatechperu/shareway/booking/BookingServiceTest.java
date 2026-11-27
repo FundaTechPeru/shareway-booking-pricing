@@ -8,6 +8,7 @@ import com.fundatechperu.shareway.booking.application.service.BookingTransaction
 import com.fundatechperu.shareway.booking.domain.exception.BookingNotFoundException;
 import com.fundatechperu.shareway.booking.domain.exception.InvalidBookingRequestException;
 import com.fundatechperu.shareway.booking.domain.exception.NoSeatsAvailableException;
+import com.fundatechperu.shareway.booking.domain.model.Booking;
 import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
 import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -101,7 +103,7 @@ class BookingServiceTest {
     }
 
     @Test
-    void missingPassengerHeaderIsABadRequest() {
+    void missingPassengerIsABadRequest() {
         assertThrows(InvalidBookingRequestException.class,
                 () -> service.createBooking(request(), null, null));
         verifyNoInteractions(transactionalService);
@@ -113,11 +115,83 @@ class BookingServiceTest {
         when(bookingRepository.findById(bookingId)).thenReturn(Optional.empty());
 
         BookingNotFoundException exception = assertThrows(BookingNotFoundException.class,
-                () -> service.findById(bookingId));
+                () -> service.findById(bookingId, PASSENGER_ID, false));
         assertTrue(exception.getMessage().contains(bookingId.toString()));
     }
 
-    // ------------------------------------------------------------------- cancel (X-User-Id)
+    // ------------------------------------------------------------------- query (JWT subject)
+
+    /** A confirmed booking of PASSENGER_ID with its boarding codes. */
+    private Booking confirmedBooking() {
+        Booking booking = Booking.restore(UUID.randomUUID(), UUID.randomUUID(), GROUP_ID, PASSENGER_ID, null,
+                BookingStatus.CONFIRMED, "pin-hash", "qr-hash", 1L, null);
+        booking.assignBoardingCodes("004271", "9f86d081884c7d659a2feaa0c55ad015", "pin-hash", "qr-hash");
+        return booking;
+    }
+
+    @Test
+    void theOwnerGetsTheBookingWithItsBoardingCodes() {
+        Booking booking = confirmedBooking();
+        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
+
+        BookingResponse response = service.findById(booking.getBookingId(), PASSENGER_ID, false);
+
+        assertEquals(BookingStatus.CONFIRMED, response.status());
+        assertEquals("004271", response.boardingPin());
+        assertEquals("9f86d081884c7d659a2feaa0c55ad015", response.qrToken());
+    }
+
+    @Test
+    void anotherPassengerGetsNotFoundForSomeoneElsesBooking() {
+        Booking booking = confirmedBooking();
+        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
+
+        assertThrows(BookingNotFoundException.class,
+                () -> service.findById(booking.getBookingId(), UUID.randomUUID(), false));
+    }
+
+    @Test
+    void anAdminGetsAnyBookingButNeverItsBoardingCodes() {
+        Booking booking = confirmedBooking();
+        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
+
+        BookingResponse response = service.findById(booking.getBookingId(), UUID.randomUUID(), true);
+
+        assertEquals(booking.getBookingId(), response.bookingId());
+        assertNull(response.boardingPin());
+        assertNull(response.qrToken());
+    }
+
+    @Test
+    void aRequestedBookingNeverCarriesBoardingCodesEvenForItsOwner() {
+        Booking booking = Booking.create(UUID.randomUUID(), GROUP_ID, PASSENGER_ID, null);
+        when(bookingRepository.findById(booking.getBookingId())).thenReturn(Optional.of(booking));
+
+        BookingResponse response = service.findById(booking.getBookingId(), PASSENGER_ID, false);
+
+        assertNull(response.boardingPin());
+        assertNull(response.qrToken());
+    }
+
+    @Test
+    void aPassengerListsOnlyTheirBookingsAndAnAdminListsAll() {
+        Booking mine = confirmedBooking();
+        Booking other = Booking.create(UUID.randomUUID(), GROUP_ID, UUID.randomUUID(), null);
+        when(bookingRepository.findByPassengerId(PASSENGER_ID)).thenReturn(List.of(mine));
+        when(bookingRepository.findAll()).thenReturn(List.of(other, mine));
+
+        List<BookingResponse> passengerView = service.findAll(PASSENGER_ID, false);
+        assertEquals(1, passengerView.size());
+        assertEquals("004271", passengerView.get(0).boardingPin());
+
+        List<BookingResponse> adminView = service.findAll(UUID.randomUUID(), true);
+        assertEquals(2, adminView.size());
+        assertTrue(adminView.stream().allMatch(response -> response.boardingPin() == null));
+        verify(bookingRepository, times(1)).findByPassengerId(PASSENGER_ID);
+        verify(bookingRepository, times(1)).findAll();
+    }
+
+    // ---------------------------------------------------------------- cancel (JWT subject)
 
     @Test
     void cancelDelegatesToTheCancellationTransactionAndReturnsItsAnswer() {
@@ -170,7 +244,7 @@ class BookingServiceTest {
     }
 
     @Test
-    void cancelWithoutXUserHeaderIsABadRequest() {
+    void cancelWithoutPassengerIsABadRequest() {
         assertThrows(InvalidBookingRequestException.class,
                 () -> service.cancel(UUID.randomUUID(), null));
         verifyNoInteractions(transactionalService);

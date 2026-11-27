@@ -1,5 +1,6 @@
 package com.fundatechperu.shareway.booking.interfaces;
 
+import com.fundatechperu.shareway.booking.infrastructure.OpenApiConfiguration;
 import com.fundatechperu.shareway.booking.infrastructure.web.ErrorResponse;
 import com.fundatechperu.shareway.booking.pricing.application.dto.response.FareEstimateResponse;
 import com.fundatechperu.shareway.booking.pricing.application.service.FareEstimateService;
@@ -10,6 +11,7 @@ import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 @RestController
+@SecurityRequirement(name = OpenApiConfiguration.BEARER_SCHEME)
 @RequestMapping("/api/v1/fares/estimate")
 @Tag(name = "Fares", description = "Fare estimation for shared trip groups. Read-only: nothing is persisted.")
 public class FareEstimateController {
@@ -54,7 +57,7 @@ public class FareEstimateController {
     @GetMapping
     public FareEstimateResponse estimate(
             @Parameter(description = "Trip group identifier (seat_inventories.group_id)", required = true,
-                    example = "11111111-1111-1111-1111-111111111111")
+                    example = "7a2b3c4d-5e6f-4a1b-9c8d-7e6f5a4b3c2d")
             @RequestParam UUID groupId) {
         return fareEstimateService.estimate(groupId);
     }

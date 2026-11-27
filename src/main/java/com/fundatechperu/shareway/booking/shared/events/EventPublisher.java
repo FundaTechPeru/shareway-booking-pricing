@@ -1,9 +1,10 @@
 package com.fundatechperu.shareway.booking.shared.events;
 
 /**
- * In-process event bus: events travel through this interface with an
- * in-memory implementation (no RabbitMQ). Publishing is synchronous and happens in the same
- * JVM; a durable bus with retries and an Outbox is future work.
+ * In-process event bus: every event, whether it arrived through POST /api/v1/internal/events
+ * or was produced inside this service, is dispatched synchronously to the handlers in the
+ * caller's transaction. Calls to other services never go through it: they are stored in the
+ * outbox (same transaction) and sent by the outbox relay.
  */
 public interface EventPublisher {
 

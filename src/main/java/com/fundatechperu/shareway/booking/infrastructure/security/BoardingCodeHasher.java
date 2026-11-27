@@ -8,11 +8,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 /**
- * Hashes of the boarding credentials (Sprint 2). bookings keeps ONLY these hashes:
+ * Hashes of the boarding credentials:
  * - pin_hash: BCrypt of the 6-digit PIN (salted, verifiable);
  * - qr_token_hash: SHA-256 of the QR token (the token is already random and high-entropy,
  *   so a plain digest is enough and stays deterministic for lookups).
- * The clear values are published once in BookingConfirmed and never logged.
+ * Trip Execution validates the boarding itself, so it receives the lowercase hexadecimal
+ * SHA-256 of both codes ({@link #sha256Hex}). The clear values are never logged.
  */
 @Component
 public class BoardingCodeHasher {
@@ -28,9 +29,14 @@ public class BoardingCodeHasher {
     }
 
     public String hashQrToken(String qrToken) {
+        return sha256Hex(qrToken);
+    }
+
+    /** Lowercase hexadecimal SHA-256 of the UTF-8 bytes of the value (64 characters). */
+    public String sha256Hex(String text) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(qrToken.getBytes(StandardCharsets.UTF_8));
+                    .digest(text.getBytes(StandardCharsets.UTF_8));
             StringBuilder hash = new StringBuilder(digest.length * 2);
             for (byte value : digest) hash.append(String.format("%02x", value));
             return hash.toString();

@@ -6,6 +6,7 @@ import com.fundatechperu.shareway.booking.application.service.SagaTimeoutService
 import com.fundatechperu.shareway.booking.infrastructure.provider.SimulatedDepartureTimeProvider;
 import com.fundatechperu.shareway.booking.infrastructure.security.BoardingCodeHasher;
 import com.fundatechperu.shareway.booking.shared.events.*;
+import com.fundatechperu.shareway.booking.support.TestTokens;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,10 +37,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Sprint 2 against local PostgreSQL (no Testcontainers): the full lifecycle driven by the
- * in-memory event bus, the confirmation codes (only hashes stored), the closing fare, the
- * cancellation with penalty and the expired-saga compensation. The schema is reset per
- * class by {@link AbstractPostgresIntegrationTest} (Flyway clean + migrate, V2 seed
- * included) and the booking tables per test method.
+ * in-memory event bus, the confirmation codes (clear values for the owner plus their hashes),
+ * the closing fare, the cancellation with penalty and the expired-saga compensation. The
+ * schema is reset per class by {@link AbstractPostgresIntegrationTest} (Flyway clean +
+ * migrate, V3 fare-rule baseline included) and the booking tables per test method.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
@@ -72,7 +73,7 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
 
     @BeforeEach
     void isolateBookingData() {
-        // fare_rules is kept: it carries the V2 seed (rule version 1) for the whole class.
+        // fare_rules is kept: it carries the V3 baseline (rule version 1) for the whole class.
         jdbcTemplate.execute("""
                 TRUNCATE TABLE
                     fares,
@@ -89,15 +90,16 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
     /**
      * (1) Full flow: reserve -> payment authorized -> GroupCompleted -> ProposalAccepted ->
      * BoardingValidated -> TripStarted -> TripCompleted. Every state is verified, the
-     * booking carries only the PIN/QR HASHES, the final fares row exists and the published
-     * events (BookingConfirmed once with the clear codes, FinalFareCalculated) are checked.
+     * booking keeps the PIN/QR hashes and returns the clear codes only to its owner, the final
+     * fares row exists and the published events (BookingConfirmed once, FinalFareCalculated)
+     * are checked.
      */
     @Test
     void fullLifecycleEndsWithHashesTheFinalFareAndThePublishedEvents() throws Exception {
         UUID groupId = insertSeatInventory(4, 4);
         UUID passengerId = UUID.randomUUID();
         UUID bookingId = createBooking(groupId, passengerId);
-        assertEquals("REQUESTED", statusOfBooking(bookingId));
+        assertEquals("REQUESTED", statusOfBooking(bookingId, passengerId));
 
         eventPublisher.publish(new PaymentAuthorized(UUID.randomUUID(), java.time.Instant.now(),
                 bookingId, UUID.randomUUID()));
@@ -112,16 +114,17 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
         assertEquals("CONFIRMED", statusOfBooking(bookingId));
         assertEquals("completed", sagaStatusOf(bookingId), "the saga completes on confirmation");
 
-        // only the HASHES live in bookings; the API never exposes the clear values
+        // the hashes are stored next to the clear codes, which only the owner gets back
         Map<String, Object> codes = jdbcTemplate.queryForMap(
                 "SELECT pin_hash, qr_token_hash FROM bookings WHERE booking_id = ?", bookingId);
         String pinHash = (String) codes.get("pin_hash");
         String qrTokenHash = (String) codes.get("qr_token_hash");
         assertNotNull(pinHash, "pin_hash must be stored on confirmation");
         assertNotNull(qrTokenHash, "qr_token_hash must be stored on confirmation");
-        String bookingJson = getBooking(bookingId).getBody();
-        assertFalse(bookingJson.toLowerCase().contains("pin"), "the API must not return the PIN");
-        assertFalse(bookingJson.toLowerCase().contains("qr"), "the API must not return the QR token");
+        JsonNode ownerView = jsonOf(getBooking(bookingId, passengerId));
+        String adminJson = getBooking(bookingId, TestTokens.admin(UUID.randomUUID())).getBody();
+        assertFalse(adminJson.contains("boardingPin"), "an admin must not get the PIN");
+        assertFalse(adminJson.contains("qrToken"), "an admin must not get the QR token");
 
         // BookingConfirmed is published once, in clear, with codes that match the stored hashes
         List<BookingConfirmed> confirmedEvents = recorder.published(BookingConfirmed.class);
@@ -132,20 +135,24 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
         assertEquals(passengerId, confirmed.passengerId());
         assertEquals(driverId, confirmed.driverId());
         assertTrue(confirmed.boardingPin().matches("\\d{6}"), "the PIN must be 6 digits");
+        assertEquals(confirmed.boardingPin(), ownerView.get("boardingPin").asText(),
+                "the owner gets the PIN to show when boarding");
+        assertEquals(confirmed.qrToken(), ownerView.get("qrToken").asText(),
+                "the owner gets the QR token to show when boarding");
         assertTrue(boardingCodeHasher.matchesPin(confirmed.boardingPin(), pinHash),
                 "the stored pin_hash must be the BCrypt of the published PIN");
         assertEquals(boardingCodeHasher.hashQrToken(confirmed.qrToken()), qrTokenHash,
                 "the stored qr_token_hash must be the SHA-256 of the published token");
 
         eventPublisher.publish(new BoardingValidated(UUID.randomUUID(), java.time.Instant.now(), bookingId));
-        assertEquals("BOARDED", statusOfBooking(bookingId));
+        assertEquals("BOARDED", statusOfBooking(bookingId, passengerId));
 
         eventPublisher.publish(new TripStarted(UUID.randomUUID(), java.time.Instant.now(), groupId));
-        assertEquals("IN_PROGRESS", statusOfBooking(bookingId));
+        assertEquals("IN_PROGRESS", statusOfBooking(bookingId, passengerId));
 
         eventPublisher.publish(new TripCompleted(UUID.randomUUID(), java.time.Instant.now(),
                 groupId, new BigDecimal("20")));
-        assertEquals("COMPLETED", statusOfBooking(bookingId));
+        assertEquals("COMPLETED", statusOfBooking(bookingId, passengerId));
 
         // fares: estimated (12 km) + final (20 km), no duplicates
         Map<String, Object> finalFare = jdbcTemplate.queryForMap(
@@ -311,7 +318,7 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
         assertEquals(409, response.getStatusCode().value(), String.valueOf(response.getBody()));
         assertTrue(messageOf(response).startsWith(LATE_CANCEL_MESSAGE_PREFIX),
                 "the 409 must carry a clear message, got: " + messageOf(response));
-        assertEquals("BOARDED", statusOfBooking(bookingId));
+        assertEquals("BOARDED", statusOfBooking(bookingId, passengerId));
         assertEquals(3, availableSeats(groupId), "the seat must not be released");
         assertEquals(0, penaltyCount());
         assertTrue(recorder.published(BookingCancelled.class).isEmpty());
@@ -437,27 +444,33 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
         eventPublisher.publish(new ProposalAccepted(UUID.randomUUID(), java.time.Instant.now(),
                 groupId, UUID.randomUUID()));
         eventPublisher.publish(new BoardingValidated(UUID.randomUUID(), java.time.Instant.now(), bookingId));
-        assertEquals("BOARDED", statusOfBooking(bookingId));
+        assertEquals("BOARDED", statusOfBooking(bookingId, passengerId));
         return bookingId;
     }
 
     private ResponseEntity<String> postBooking(UUID groupId, UUID passengerId) {
         HttpHeaders headers = jsonHeaders();
-        headers.set("X-User-Id", passengerId.toString());
+        headers.setBearerAuth(TestTokens.passenger(passengerId));
         headers.set("Idempotency-Key", UUID.randomUUID().toString());
         Map<String, String> payload = Map.of("groupId", groupId.toString(),
                 "requestId", UUID.randomUUID().toString());
         return rest.postForEntity("/api/v1/bookings", new HttpEntity<>(payload, headers), String.class);
     }
 
-    private ResponseEntity<String> getBooking(UUID bookingId) {
+    private ResponseEntity<String> getBooking(UUID bookingId, UUID passengerId) {
+        return getBooking(bookingId, TestTokens.passenger(passengerId));
+    }
+
+    private ResponseEntity<String> getBooking(UUID bookingId, String token) {
+        HttpHeaders headers = jsonHeaders();
+        headers.setBearerAuth(token);
         return rest.exchange("/api/v1/bookings/{bookingId}", HttpMethod.GET,
-                new HttpEntity<>(jsonHeaders()), String.class, bookingId);
+                new HttpEntity<>(headers), String.class, bookingId);
     }
 
     private ResponseEntity<String> cancel(UUID bookingId, UUID actorId) {
         HttpHeaders headers = jsonHeaders();
-        headers.set("X-User-Id", actorId.toString());
+        headers.setBearerAuth(TestTokens.passenger(actorId));
         return rest.exchange("/api/v1/bookings/{bookingId}/cancel", HttpMethod.POST,
                 new HttpEntity<>(headers), String.class, bookingId);
     }
@@ -481,8 +494,14 @@ class Sprint2IntegrationTest extends AbstractPostgresIntegrationTest {
         return jsonOf(response).get("message").asText();
     }
 
+    /** Status as seen by an admin (any booking). */
     private String statusOfBooking(UUID bookingId) {
-        return jsonOf(getBooking(bookingId)).get("status").asText();
+        return jsonOf(getBooking(bookingId, TestTokens.admin(UUID.randomUUID()))).get("status").asText();
+    }
+
+    /** Status as seen by the owner. */
+    private String statusOfBooking(UUID bookingId, UUID passengerId) {
+        return jsonOf(getBooking(bookingId, passengerId)).get("status").asText();
     }
 
     private BigDecimal estimatedAmountOf(UUID bookingId) {

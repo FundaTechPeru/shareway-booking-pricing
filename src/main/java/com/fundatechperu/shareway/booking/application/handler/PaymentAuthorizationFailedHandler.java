@@ -1,53 +1,42 @@
 package com.fundatechperu.shareway.booking.application.handler;
 
-import com.fundatechperu.shareway.booking.domain.exception.BookingNotFoundException;
-import com.fundatechperu.shareway.booking.domain.exception.GroupNotFoundException;
+import com.fundatechperu.shareway.booking.application.service.BookingCancellationService;
 import com.fundatechperu.shareway.booking.domain.model.Booking;
 import com.fundatechperu.shareway.booking.domain.model.BookingSaga;
-import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
-import com.fundatechperu.shareway.booking.domain.model.SeatInventory;
+import com.fundatechperu.shareway.booking.domain.model.CancellationReason;
 import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
 import com.fundatechperu.shareway.booking.domain.repository.BookingSagaRepository;
-import com.fundatechperu.shareway.booking.domain.repository.SeatInventoryRepository;
-import com.fundatechperu.shareway.booking.shared.events.BookingCancelled;
-import com.fundatechperu.shareway.booking.shared.events.EventPublisher;
 import com.fundatechperu.shareway.booking.shared.events.EventHandler;
 import com.fundatechperu.shareway.booking.shared.events.PaymentAuthorizationFailed;
-import org.springframework.context.annotation.Lazy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Clock;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
- * PaymentAuthorizationFailed: compensating transaction, all in one local transaction:
- * booking -> cancelled, one seat released (available_seats + 1), saga -> compensated and
- * BookingCancelled published. Re-delivery of the event is a no-op (already cancelled).
+ * PaymentAuthorizationFailed (published by the outbox relay when Payments answers 402, 404 or
+ * 422): compensating transaction, all in one local transaction: booking -> cancelled
+ * (PAYMENT_FAILED), one seat released, saga -> compensated and BookingCancelled published.
+ * Re-delivery is a no-op (already cancelled).
  */
 @Service
 public class PaymentAuthorizationFailedHandler implements EventHandler {
 
-    private final BookingRepository bookingRepository;
-    private final SeatInventoryRepository seatInventoryRepository;
-    private final BookingSagaRepository bookingSagaRepository;
-    private final EventPublisher eventPublisher;
-    private final Clock clock;
+    private static final Logger log = LoggerFactory.getLogger(PaymentAuthorizationFailedHandler.class);
 
-    /**
-     * The EventPublisher is injected lazily because it (as InMemoryEventPublisher) depends on
-     * all EventHandlers, including this one; without @Lazy the two beans would form a cycle.
-     */
+    private final BookingRepository bookingRepository;
+    private final BookingSagaRepository bookingSagaRepository;
+    private final BookingCancellationService cancellationService;
+
     public PaymentAuthorizationFailedHandler(BookingRepository bookingRepository,
-                                             SeatInventoryRepository seatInventoryRepository,
                                              BookingSagaRepository bookingSagaRepository,
-                                             @Lazy EventPublisher eventPublisher,
-                                             Clock clock) {
+                                             BookingCancellationService cancellationService) {
         this.bookingRepository = bookingRepository;
-        this.seatInventoryRepository = seatInventoryRepository;
         this.bookingSagaRepository = bookingSagaRepository;
-        this.eventPublisher = eventPublisher;
-        this.clock = clock;
+        this.cancellationService = cancellationService;
     }
 
     @Override
@@ -60,26 +49,23 @@ public class PaymentAuthorizationFailedHandler implements EventHandler {
     public void onEvent(Object event) {
         PaymentAuthorizationFailed failed = (PaymentAuthorizationFailed) event;
         UUID bookingId = failed.bookingId();
-
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new BookingNotFoundException(bookingId));
-        BookingSaga saga = bookingSagaRepository.findByBookingId(bookingId)
-                .orElseThrow(() -> new BookingNotFoundException(bookingId));
-        SeatInventory inventory = seatInventoryRepository.findById(booking.getGroupId())
-                .orElseThrow(() -> new GroupNotFoundException(booking.getGroupId()));
-
-        if (booking.getStatus() != BookingStatus.CANCELLED) {
-            booking.cancel();                    // requested|grouped|confirmed -> cancelled
-            bookingRepository.save(booking);
-            inventory.releaseSeat();             // available_seats + 1
-            seatInventoryRepository.save(inventory);
-            eventPublisher.publish(new BookingCancelled(UUID.randomUUID(), clock.instant(),
-                    bookingId, booking.getGroupId(), booking.getPassengerId(), false));
+        Optional<Booking> found = bookingRepository.findById(bookingId);
+        if (found.isEmpty()) {
+            log.warn("PaymentAuthorizationFailed for unknown booking {}; ignored.", bookingId);
+            return;
         }
-
-        if (saga.getStatus() != BookingSaga.Status.COMPENSATED) {
-            saga.compensate();
-            bookingSagaRepository.save(saga);
+        Booking booking = found.get();
+        log.info("Payment authorization of booking {} failed: {}", bookingId, failed.reason());
+        if (booking.isCancellable()) {
+            cancellationService.cancelBySystem(booking, CancellationReason.PAYMENT_FAILED);
+            return;
         }
+        // Already cancelled (or further): only make sure the saga ends compensated.
+        bookingSagaRepository.findByBookingId(bookingId).ifPresent(saga -> {
+            if (saga.getStatus() == BookingSaga.Status.RUNNING) {
+                saga.compensate();
+                bookingSagaRepository.save(saga);
+            }
+        });
     }
 }

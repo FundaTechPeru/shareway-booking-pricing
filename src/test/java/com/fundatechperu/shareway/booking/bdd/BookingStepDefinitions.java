@@ -34,7 +34,11 @@ public class BookingStepDefinitions {
 
     @Before
     public void reset() {
-        jdbcTemplate.execute("TRUNCATE TABLE fares, penalties, booking_sagas, bookings CASCADE");
+        jdbcTemplate.execute("TRUNCATE TABLE fares, penalties, booking_sagas, bookings, outbox_messages CASCADE");
+        // The scenarios use one trip group with four free seats; the test creates it itself.
+        jdbcTemplate.update("DELETE FROM seat_inventories WHERE group_id = ?", GROUP_ID);
+        jdbcTemplate.update("INSERT INTO seat_inventories (group_id, capacity, available_seats) VALUES (?, 4, 4)",
+                GROUP_ID);
         cancellationError = null;
     }
 
