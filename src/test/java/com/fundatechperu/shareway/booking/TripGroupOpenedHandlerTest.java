@@ -43,7 +43,7 @@ class TripGroupOpenedHandlerTest {
         assertEquals(GROUP_ID, saved.getGroupId());
         assertEquals(4, saved.getCapacity());
         assertEquals(4, saved.getAvailableSeats());
-        assertEquals(0L, saved.getVersion());
+        assertNull(saved.getVersion(), "a new inventory is inserted, not merged");
     }
 
     @Test

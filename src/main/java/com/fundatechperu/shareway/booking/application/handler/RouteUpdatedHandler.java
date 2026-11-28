@@ -1,8 +1,6 @@
 package com.fundatechperu.shareway.booking.application.handler;
 
-import com.fundatechperu.shareway.booking.domain.exception.GroupNotFoundException;
 import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
-import com.fundatechperu.shareway.booking.domain.model.SeatInventory;
 import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
 import com.fundatechperu.shareway.booking.domain.repository.SeatInventoryRepository;
 import com.fundatechperu.shareway.booking.pricing.application.service.FareService;
@@ -55,6 +53,7 @@ public class RouteUpdatedHandler implements EventHandler {
         UUID groupId = updated.groupId();
         BigDecimal distanceKm = updated.distanceKm();
         LocalDate today = LocalDate.now(clock);
+        if (seatInventoryRepository.findById(groupId).isEmpty()) return;   // unknown group: nothing to re-price
         int groupedPassengers = heldSeats(groupId);
         bookingRepository.findByGroupIdAndStatusNot(groupId, BookingStatus.CANCELLED)
                 .forEach(booking -> fareService.priceAndPersist(booking.getBookingId(), Fare.ESTIMATED,
@@ -63,8 +62,8 @@ public class RouteUpdatedHandler implements EventHandler {
 
     /** Held seats of a group, minimum 1 (an empty group is priced as a solo rider). */
     private int heldSeats(UUID groupId) {
-        SeatInventory inventory = seatInventoryRepository.findById(groupId)
-                .orElseThrow(() -> new GroupNotFoundException(groupId));
-        return Math.max(1, inventory.getCapacity() - inventory.getAvailableSeats());
+        return seatInventoryRepository.findById(groupId)
+                .map(inventory -> Math.max(1, inventory.getCapacity() - inventory.getAvailableSeats()))
+                .orElse(1);
     }
 }

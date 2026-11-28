@@ -58,6 +58,31 @@ booking:
   departure:
     simulated-offset-minutes: "${BOOKING_DEPARTURE_SIMULATED_OFFSET_MINUTES:120}"
 
+# --- ShareWay integration -------------------------------------------------------------------
+app:
+  # HS256 access tokens issued by Driver Management, signed with the JWT_SECRET shared by every
+  # ShareWay service. Outside the dev, test and local profiles the service refuses to start
+  # without a JWT_SECRET of at least 32 characters (see JwtSecretValidator).
+  jwt:
+    secret: "${JWT_SECRET:}"
+  # Calls between ShareWay services carry the X-Internal-Api-Key header. Outside the dev, test
+  # and local profiles the service refuses to start when INTERNAL_API_KEY is missing or is the
+  # shared development value; inside them the development value is used when it is not set.
+  internal:
+    api-key: "${INTERNAL_API_KEY:}"
+  integration:
+    payments-url: "${PAYMENTS_URL:https://shareway-payments-settlement-service.onrender.com}"
+    trip-execution-url: "${TRIP_EXECUTION_URL:https://shareway-trip-execution.onrender.com}"
+    # Free Render services can take up to a minute to wake up.
+    timeout: 90s
+  # Transactional outbox of the calls to Payments and Trip Execution.
+  outbox:
+    relay-enabled: "${OUTBOX_RELAY_ENABLED:true}"
+    poll-interval: 5s
+    batch-size: 50
+    initial-backoff: 5s
+    max-backoff: 5m
+
 springdoc:
   swagger-ui:
     path: /swagger-ui.html

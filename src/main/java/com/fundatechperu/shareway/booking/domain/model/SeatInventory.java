@@ -27,7 +27,8 @@ public class SeatInventory {
     }
 
     public static SeatInventory create(UUID groupId, int capacity) {
-        return new SeatInventory(groupId, capacity, capacity, 0L, LocalDateTime.now());
+        // No version yet: the entity is new, so it is inserted (a version of 0 would make it a stale update).
+        return new SeatInventory(groupId, capacity, capacity, null, LocalDateTime.now());
     }
 
     public static SeatInventory restore(UUID groupId, int capacity, int availableSeats, Long version,

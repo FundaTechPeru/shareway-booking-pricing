@@ -22,8 +22,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * POST /dev/events (dev profile only): publishes a simulated event through the same
- * EventPublisher used by the application. Every consumed event of the lifecycle can be
- * simulated (Sprint 2).
+ * EventPublisher used by the application, converted by the same IntegrationEventParser as the
+ * internal endpoint (eventId and occurredAt are optional here).
  */
 class DevEventControllerTest {
 
@@ -32,7 +32,7 @@ class DevEventControllerTest {
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new DevEventController(eventPublisher))
+        mockMvc = MockMvcBuilders.standaloneSetup(new DevEventController(eventPublisher, java.time.Clock.systemUTC()))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -151,8 +151,8 @@ class DevEventControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(
                         "Unsupported event type: NotAnEvent. Supported: TripGroupOpened, PaymentAuthorized, "
-                                + "PaymentAuthorizationFailed, GroupCompleted, ProposalAccepted, RouteUpdated, "
-                                + "BoardingValidated, TripStarted, TripCompleted"));
+                                + "PaymentAuthorizationFailed, GroupCompleted, ProposalAccepted, GroupRejected, "
+                                + "RouteUpdated, BoardingValidated, TripStarted, TripCompleted, TripCancelled"));
         verifyNoInteractions(eventPublisher);
     }
 
@@ -186,14 +186,42 @@ class DevEventControllerTest {
         verifyNoInteractions(eventPublisher);
     }
 
+    /** distanceKm may be null: the handler then asks GroupInfoProvider. */
     @Test
-    void tripCompletedRequiresTheDistance() throws Exception {
+    void tripCompletedWithoutDistanceIsPublishedWithANullDistance() throws Exception {
+        UUID groupId = UUID.randomUUID();
+
+        TripCompleted event = (TripCompleted) publishAndCapture(
+                "{\"type\":\"TripCompleted\",\"groupId\":\"" + groupId + "\"}");
+
+        assertEquals(groupId, event.groupId());
+        assertNull(event.distanceKm());
+        assertTrue(event.boardedBookingIds().isEmpty());
+    }
+
+    @Test
+    void negativeDistanceIsA400() throws Exception {
         mockMvc.perform(post("/dev/events")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"type\":\"TripCompleted\",\"groupId\":\"" + UUID.randomUUID() + "\"}"))
+                        .content("{\"type\":\"RouteUpdated\",\"groupId\":\"" + UUID.randomUUID()
+                                + "\",\"distanceKm\":-1}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("distanceKm (>= 0) is required for TripCompleted"));
+                .andExpect(jsonPath("$.message").value("distanceKm (>= 0) is required for RouteUpdated"));
         verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
+    void publishesGroupRejectedAndTripCancelled() throws Exception {
+        UUID groupId = UUID.randomUUID();
+        GroupRejected rejected = (GroupRejected) publishAndCapture(
+                "{\"type\":\"GroupRejected\",\"groupId\":\"" + groupId + "\"}");
+        assertEquals(groupId, rejected.groupId());
+
+        reset(eventPublisher);
+        TripCancelled cancelled = (TripCancelled) publishAndCapture(
+                "{\"type\":\"TripCancelled\",\"groupId\":\"" + groupId + "\",\"reason\":\"vehicle breakdown\"}");
+        assertEquals(groupId, cancelled.groupId());
+        assertEquals("vehicle breakdown", cancelled.reason());
     }
 
     @Test

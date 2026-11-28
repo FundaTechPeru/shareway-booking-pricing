@@ -15,7 +15,7 @@ class SeatInventoryTest {
         SeatInventory inventory = SeatInventory.create(UUID.randomUUID(), 4);
         assertEquals(4, inventory.getAvailableSeats());
         assertEquals(4, inventory.getCapacity());
-        assertEquals(0L, inventory.getVersion());
+        assertNull(inventory.getVersion(), "a new inventory has no version: it must be inserted, not merged");
     }
 
     @Test

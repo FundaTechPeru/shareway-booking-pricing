@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fundatechperu.shareway.booking.shared.events.EventPublisher;
 import com.fundatechperu.shareway.booking.shared.events.PaymentAuthorizationFailed;
+import com.fundatechperu.shareway.booking.support.TestTokens;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,10 +32,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * End-to-end behaviour against local PostgreSQL (no Testcontainers): the real HTTP server,
- * the gateway-trusted X-User-Id header (no JWT inside the service), one local transaction per
- * request and the in-memory event bus. The schema is reset per class by
- * {@link AbstractPostgresIntegrationTest} (Flyway clean + migrate, V2 seed included) and the
- * booking tables per test method.
+ * the Bearer JWT validated by the service (401 without a valid token, 403 for a wrong role,
+ * 404 for someone else's booking), one local transaction per request and the in-memory event
+ * bus. The schema is reset per class by {@link AbstractPostgresIntegrationTest} (Flyway clean
+ * + migrate, V3 fare-rule baseline included) and the booking tables per test method.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
@@ -54,7 +55,7 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
 
     @BeforeEach
     void isolateBookingData() {
-        // fare_rules is kept: it carries the V2 seed (rule version 1) for the whole class.
+        // fare_rules is kept: it carries the V3 baseline (rule version 1) for the whole class.
         jdbcTemplate.execute("""
                 TRUNCATE TABLE
                     fares,
@@ -185,12 +186,11 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Cancellation runs only on the X-User-Id header delivered by the API Gateway: the owner
-     * cancels and the seat comes back, another passenger gets 404 and a missing header 400.
-     * No Authorization header is ever needed or sent.
+     * Cancellation runs only for the subject of the JWT: the owner cancels and the seat comes
+     * back, another passenger gets 404 and a request without a token 401.
      */
     @Test
-    void cancelTrustsOnlyTheXUserDeliveredByTheGateway() throws Exception {
+    void cancelIsOnlyAllowedToTheOwnerOfTheToken() throws Exception {
         UUID groupId = insertSeatInventory(4, 4);
         ResponseEntity<String> created = postBooking(groupId, UUID.randomUUID().toString(),
                 UUID.randomUUID().toString());
@@ -198,17 +198,17 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
         UUID bookingId = UUID.fromString(objectMapper.readTree(created.getBody()).get("bookingId").asText());
         assertEquals(3, availableSeats(groupId));
 
-        // missing X-User-Id -> 400
-        ResponseEntity<String> noHeader = cancel(bookingId, null);
-        assertEquals(400, noHeader.getStatusCode().value());
-        assertEquals("X-User-Id header is required", messageOf(noHeader));
+        // no token -> 401
+        ResponseEntity<String> anonymous = rest.exchange("/api/v1/bookings/{bookingId}/cancel", HttpMethod.POST,
+                new HttpEntity<>(jsonHeaders()), String.class, bookingId);
+        assertEquals(401, anonymous.getStatusCode().value());
 
         // another passenger -> 404 (the booking does not exist for them)
         ResponseEntity<String> stranger = cancel(bookingId, UUID.randomUUID());
         assertEquals(404, stranger.getStatusCode().value());
         assertEquals(3, availableSeats(groupId), "the seat must still be held");
 
-        // the owner cancels -> 200 and the seat is released (Sprint 2 body: flat, with penalty fields)
+        // the owner cancels -> 200 and the seat is released
         ResponseEntity<String> owner = cancel(bookingId, PASSENGER_ID);
         assertEquals(200, owner.getStatusCode().value(), String.valueOf(owner.getBody()));
         JsonNode cancelBody = objectMapper.readTree(owner.getBody());
@@ -219,6 +219,78 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
         assertEquals(4, availableSeats(groupId), "available_seats must go back to 4");
         assertEquals("cancelled", jdbcTemplate.queryForObject(
                 "SELECT status FROM bookings WHERE booking_id = ?", String.class, bookingId));
+        assertEquals("PASSENGER_CANCELLED", jdbcTemplate.queryForObject(
+                "SELECT cancellation_reason FROM bookings WHERE booking_id = ?", String.class, bookingId));
+    }
+
+    /**
+     * JWT contract: a missing, expired or foreign-signed token is 401 on every protected route;
+     * POST /bookings needs the PASSENGER role (403 otherwise); someone else's booking is 404
+     * for a passenger and visible (without boarding codes) for an admin; the list shows a
+     * passenger only their bookings and an admin all of them. Health, Swagger and the OpenAPI
+     * document stay public and the internal route never accepts a JWT.
+     */
+    @Test
+    void theJwtDecidesWhoMayDoWhat() throws Exception {
+        UUID groupId = insertSeatInventory(4, 4);
+        ResponseEntity<String> created = postBooking(groupId, UUID.randomUUID().toString(),
+                UUID.randomUUID().toString());
+        assertEquals(202, created.getStatusCode().value(), String.valueOf(created.getBody()));
+        String bookingId = objectMapper.readTree(created.getBody()).get("bookingId").asText();
+
+        // 401: no token, expired token, token signed with another secret, malformed token
+        assertEquals(401, exchange(HttpMethod.GET, "/api/v1/bookings/" + bookingId, null, null));
+        assertEquals(401, exchange(HttpMethod.GET, "/api/v1/bookings/" + bookingId,
+                TestTokens.expired(PASSENGER_ID, "PASSENGER"), null));
+        assertEquals(401, exchange(HttpMethod.GET, "/api/v1/bookings/" + bookingId,
+                TestTokens.signedWithAnotherSecret(PASSENGER_ID, "PASSENGER"), null));
+        assertEquals(401, exchange(HttpMethod.GET, "/api/v1/bookings", "not-a-jwt", null));
+        assertEquals(401, exchange(HttpMethod.GET, "/api/v1/fare-rules", null, null));
+        ResponseEntity<String> unauthorized = rest.exchange("/api/v1/bookings", HttpMethod.GET,
+                new HttpEntity<>(jsonHeaders()), String.class);
+        assertEquals("Missing, invalid or expired access token", messageOf(unauthorized));
+
+        // 403: only a PASSENGER books; a DRIVER or a token without role may not
+        String body = objectMapper.writeValueAsString(Map.of("groupId", groupId.toString(),
+                "requestId", UUID.randomUUID().toString()));
+        assertEquals(403, exchange(HttpMethod.POST, "/api/v1/bookings", TestTokens.driver(UUID.randomUUID()), body));
+        assertEquals(403, exchange(HttpMethod.POST, "/api/v1/bookings", TestTokens.admin(UUID.randomUUID()), body));
+        assertEquals(403, exchange(HttpMethod.POST, "/api/v1/bookings",
+                TestTokens.withoutRole(UUID.randomUUID()), body));
+        assertEquals(403, exchange(HttpMethod.GET, "/api/v1/bookings", TestTokens.driver(UUID.randomUUID()), null));
+        assertEquals(3, availableSeats(groupId), "no forbidden request may hold a seat");
+
+        // 404: another passenger cannot see the booking; the owner and an admin can
+        assertEquals(404, exchange(HttpMethod.GET, "/api/v1/bookings/" + bookingId,
+                TestTokens.passenger(UUID.randomUUID()), null));
+        assertEquals(200, exchange(HttpMethod.GET, "/api/v1/bookings/" + bookingId,
+                TestTokens.passenger(PASSENGER_ID), null));
+        assertEquals(200, exchange(HttpMethod.GET, "/api/v1/bookings/" + bookingId,
+                TestTokens.admin(UUID.randomUUID()), null));
+
+        // list: the passenger sees only theirs, the admin sees everything
+        UUID otherPassenger = UUID.randomUUID();
+        HttpHeaders otherHeaders = jsonHeaders();
+        otherHeaders.setBearerAuth(TestTokens.passenger(otherPassenger));
+        assertEquals(202, rest.postForEntity("/api/v1/bookings", new HttpEntity<>(body, otherHeaders), String.class)
+                .getStatusCode().value());
+        JsonNode mine = objectMapper.readTree(get("/api/v1/bookings", TestTokens.passenger(PASSENGER_ID)).getBody());
+        assertEquals(1, mine.size());
+        assertEquals(bookingId, mine.get(0).get("bookingId").asText());
+        assertEquals(groupId.toString(), mine.get(0).get("groupId").asText());
+        JsonNode all = objectMapper.readTree(get("/api/v1/bookings", TestTokens.admin(UUID.randomUUID())).getBody());
+        assertEquals(2, all.size());
+
+        // any authenticated user may read fares and fare rules
+        assertEquals(200, exchange(HttpMethod.GET, "/api/v1/fare-rules", TestTokens.driver(UUID.randomUUID()), null));
+        assertEquals(200, exchange(HttpMethod.GET, "/api/v1/fares/estimate?groupId=" + groupId,
+                TestTokens.withoutRole(UUID.randomUUID()), null));
+
+        // public routes need no token; the internal route never accepts a JWT
+        assertEquals(200, exchange(HttpMethod.GET, "/actuator/health", null, null));
+        assertEquals(200, exchange(HttpMethod.GET, "/v3/api-docs", null, null));
+        assertEquals(401, exchange(HttpMethod.POST, "/api/v1/internal/events", TestTokens.admin(UUID.randomUUID()),
+                "{\"type\":\"GroupCompleted\"}"));
     }
 
     /**
@@ -228,17 +300,12 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
      */
     @Test
     void errorStatusCodesFollowTheContract() throws Exception {
-        // 400: missing groupId, malformed UUIDs and missing X-User-Id
+        // 400: missing groupId and malformed UUIDs
         assertEquals(400, statusOf(HttpMethod.GET, "/api/v1/fares/estimate", null));
         assertEquals(400, statusOf(HttpMethod.GET, "/api/v1/fares/estimate?groupId=not-a-uuid", null));
         assertEquals(400, statusOf(HttpMethod.GET, "/api/v1/bookings/not-a-uuid", null));
-
-        HttpHeaders headers = jsonHeaders();
-        ResponseEntity<String> noPassenger = rest.exchange("/api/v1/bookings", HttpMethod.POST,
-                new HttpEntity<>(Map.of("groupId", UUID.randomUUID().toString(),
-                        "requestId", UUID.randomUUID().toString()), headers), String.class);
-        assertEquals(400, noPassenger.getStatusCode().value());
-        assertEquals("X-User-Id header is required", messageOf(noPassenger));
+        assertEquals(400, statusOf(HttpMethod.POST, "/api/v1/bookings",
+                "{\"requestId\":\"" + UUID.randomUUID() + "\"}"));
 
         // 404: unknown booking, unknown group and unknown URL path
         assertEquals(404, statusOf(HttpMethod.GET, "/api/v1/bookings/" + UUID.randomUUID(), null));
@@ -246,20 +313,22 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
                 "/api/v1/fares/estimate?groupId=" + UUID.randomUUID(), null));
         assertEquals(404, statusOf(HttpMethod.GET, "/definitely-not-here", null));
 
-        // 405: GET collection of bookings and POST over a GET-only path
-        assertEquals(405, statusOf(HttpMethod.GET, "/api/v1/bookings", null));
+        // 405: DELETE over the bookings collection and POST over a GET-only path
+        assertEquals(405, statusOf(HttpMethod.DELETE, "/api/v1/bookings", null));
         assertEquals(405, statusOf(HttpMethod.POST, "/api/v1/fares/estimate", "{}"));
     }
 
     /**
      * Actuator contract: only health and info are exposed, and the health
      * endpoint answers with liveness and readiness probes. Every other actuator endpoint
-     * must not exist.
+     * must not exist. Only health is public.
      */
     @Test
     void actuatorExposesOnlyHealthAndInfoWithProbes() throws Exception {
+        assertEquals(401, exchange(HttpMethod.GET, "/actuator", null, null), "only health is public");
         JsonNode links = objectMapper.readTree(
-                rest.exchange("/actuator", HttpMethod.GET, new HttpEntity<>(jsonHeaders()), String.class).getBody())
+                rest.exchange("/actuator", HttpMethod.GET, new HttpEntity<>(authHeaders(PASSENGER_ID)), String.class)
+                        .getBody())
                 .path("_links");
         assertTrue(links.has("health"), "health must be exposed");
         assertTrue(links.has("info"), "info must be exposed");
@@ -287,8 +356,8 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
 
     /**
      * Swagger/OpenAPI contract: the UI lives at /swagger-ui.html and the machine
-     * document at /v3/api-docs. The document must describe the endpoints and the X-User-Id header
-     * of the API Gateway, and must not advertise any JWT security scheme (there is none left).
+     * document at /v3/api-docs. The document must describe the endpoints, the Bearer JWT scheme
+     * and the internal API key scheme, and X-User-Id must be gone.
      */
     @Test
     void swaggerUiAndOpenApiDocumentAreExposed() throws Exception {
@@ -300,10 +369,12 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
         assertTrue(document.path("paths").has("/api/v1/bookings"), "bookings must be documented");
         assertTrue(document.path("paths").has("/api/v1/fares/estimate"),
                 "fare estimate must be documented");
-        assertTrue(openApi.getBody().contains("X-User-Id"), "the gateway header must be documented");
-        assertFalse(openApi.getBody().contains("bearerAuth"), "no JWT scheme may be exposed");
-        assertFalse(document.path("components").path("securitySchemes").has("bearerAuth"),
-                "components must not carry bearerAuth");
+        assertTrue(document.path("paths").has("/api/v1/internal/events"), "the internal endpoint must be documented");
+        assertFalse(openApi.getBody().contains("X-User-Id"), "X-User-Id is no longer read");
+        assertEquals("bearer", document.path("components").path("securitySchemes").path("bearerAuth")
+                .path("scheme").asText(), "the JWT scheme must be documented");
+        assertEquals("X-Internal-Api-Key", document.path("components").path("securitySchemes")
+                .path("internalApiKey").path("name").asText(), "the internal key must be documented");
 
         // Gateway contract: every business route lives under /api/v1 and none keeps the
         // old unprefixed path or a stray /pricing prefix. Actuator and springdoc stay out.
@@ -402,16 +473,27 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
 
     // --------------------------------------------------------------------------- helpers
 
+    /** Status of a request authenticated as the PASSENGER_ID passenger. */
     private int statusOf(HttpMethod method, String path, String body) {
-        ResponseEntity<String> response = body == null
-                ? rest.exchange(path, method, new HttpEntity<>(jsonHeaders()), String.class)
-                : rest.exchange(path, method, new HttpEntity<>(body, jsonHeaders()), String.class);
-        return response.getStatusCode().value();
+        return exchange(method, path, TestTokens.passenger(PASSENGER_ID), body);
+    }
+
+    /** Status of a request with the given bearer token (none when null). */
+    private int exchange(HttpMethod method, String path, String token, String body) {
+        HttpHeaders headers = jsonHeaders();
+        if (token != null) headers.setBearerAuth(token);
+        HttpEntity<String> entity = body == null ? new HttpEntity<>(headers) : new HttpEntity<>(body, headers);
+        return rest.exchange(path, method, entity, String.class).getStatusCode().value();
+    }
+
+    private ResponseEntity<String> get(String path, String token) {
+        HttpHeaders headers = jsonHeaders();
+        headers.setBearerAuth(token);
+        return rest.exchange(path, HttpMethod.GET, new HttpEntity<>(headers), String.class);
     }
 
     private ResponseEntity<String> postBooking(UUID groupId, String requestId, String idempotencyKey) {
-        HttpHeaders headers = jsonHeaders();
-        headers.set("X-User-Id", PASSENGER_ID.toString());
+        HttpHeaders headers = authHeaders(PASSENGER_ID);
         headers.set("Idempotency-Key", idempotencyKey);
         Map<String, String> payload = Map.of("groupId", groupId.toString(), "requestId", requestId);
         return rest.postForEntity("/api/v1/bookings", new HttpEntity<>(payload, headers), String.class);
@@ -419,17 +501,23 @@ class BookingIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private ResponseEntity<String> getBooking(UUID bookingId) {
         return rest.exchange("/api/v1/bookings/{bookingId}", HttpMethod.GET,
-                new HttpEntity<>(jsonHeaders()), String.class, bookingId);
+                new HttpEntity<>(authHeaders(PASSENGER_ID)), String.class, bookingId);
     }
 
     private ResponseEntity<String> cancel(UUID bookingId, UUID actorId) {
-        HttpHeaders headers = jsonHeaders();
-        if (actorId != null) headers.set("X-User-Id", actorId.toString());
+        HttpHeaders headers = authHeaders(actorId);
         return rest.exchange("/api/v1/bookings/{bookingId}/cancel", HttpMethod.POST,
                 new HttpEntity<>(headers), String.class, bookingId);
     }
 
-    /** JSON headers without Authorization: the service reads only X-User-Id. */
+    /** JSON headers authenticated as the given passenger. */
+    private HttpHeaders authHeaders(UUID passengerId) {
+        HttpHeaders headers = jsonHeaders();
+        headers.setBearerAuth(TestTokens.passenger(passengerId));
+        return headers;
+    }
+
+    /** JSON headers without Authorization. */
     private HttpHeaders jsonHeaders() {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);

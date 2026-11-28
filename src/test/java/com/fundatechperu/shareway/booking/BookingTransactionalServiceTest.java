@@ -3,6 +3,8 @@ package com.fundatechperu.shareway.booking;
 import com.fundatechperu.shareway.booking.application.dto.request.CreateBookingRequest;
 import com.fundatechperu.shareway.booking.application.dto.response.BookingResponse;
 import com.fundatechperu.shareway.booking.application.dto.response.CancellationResponse;
+import com.fundatechperu.shareway.booking.application.port.IntegrationOutbox;
+import com.fundatechperu.shareway.booking.application.service.BookingCancellationService;
 import com.fundatechperu.shareway.booking.application.service.BookingTransactionalService;
 import com.fundatechperu.shareway.booking.domain.exception.BookingAlreadyExistsException;
 import com.fundatechperu.shareway.booking.domain.exception.BookingCannotBeCancelledException;
@@ -12,6 +14,7 @@ import com.fundatechperu.shareway.booking.domain.exception.NoSeatsAvailableExcep
 import com.fundatechperu.shareway.booking.domain.model.Booking;
 import com.fundatechperu.shareway.booking.domain.model.BookingSaga;
 import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
+import com.fundatechperu.shareway.booking.domain.model.CancellationReason;
 import com.fundatechperu.shareway.booking.domain.model.SagaStep;
 import com.fundatechperu.shareway.booking.domain.model.SeatInventory;
 import com.fundatechperu.shareway.booking.domain.repository.BookingRepository;
@@ -46,6 +49,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -71,6 +75,7 @@ class BookingTransactionalServiceTest {
     private final PenaltyRepository penaltyRepository = mock(PenaltyRepository.class);
     private final DepartureTimeProvider departureTimeProvider = mock(DepartureTimeProvider.class);
     private final EventPublisher eventPublisher = mock(EventPublisher.class);
+    private final IntegrationOutbox integrationOutbox = mock(IntegrationOutbox.class);
     private final CancellationPolicy cancellationPolicy =
             new CancellationPolicy(30, BigDecimal.valueOf(20), new BigDecimal("1.00"));
 
@@ -78,10 +83,13 @@ class BookingTransactionalServiceTest {
 
     @BeforeEach
     void setUp() {
+        BookingCancellationService cancellationService = new BookingCancellationService(bookingRepository,
+                seatInventoryRepository, bookingSagaRepository, eventPublisher, integrationOutbox,
+                departureTimeProvider, FIXED_CLOCK);
         service = new BookingTransactionalService(bookingRepository, seatInventoryRepository,
                 bookingSagaRepository, fareService, fareRepository, penaltyRepository, cancellationPolicy,
-                departureTimeProvider, new FakeGroupInfoProvider(), eventPublisher,
-                FIXED_CLOCK, PAYMENT_TIMEOUT_MINUTES, new SimpleMeterRegistry());
+                departureTimeProvider, new FakeGroupInfoProvider(), cancellationService, integrationOutbox,
+                eventPublisher, FIXED_CLOCK, PAYMENT_TIMEOUT_MINUTES, new SimpleMeterRegistry());
     }
 
     private CreateBookingRequest request() {
@@ -102,7 +110,8 @@ class BookingTransactionalServiceTest {
         assertEquals(existing.getBookingId(), response.bookingId());
         assertEquals(BookingStatus.CONFIRMED, response.status());
         verify(bookingRepository, never()).save(any());
-        verifyNoInteractions(seatInventoryRepository, bookingSagaRepository, fareService, eventPublisher);
+        verifyNoInteractions(seatInventoryRepository, bookingSagaRepository, fareService, eventPublisher,
+                integrationOutbox);
     }
 
     @Test
@@ -112,10 +121,21 @@ class BookingTransactionalServiceTest {
         when(seatInventoryRepository.save(any(SeatInventory.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(bookingRepository.save(any(Booking.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(bookingSagaRepository.save(any(BookingSaga.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(fareService.recordFare(any(), eq(Fare.ESTIMATED), any(), any(), anyInt()))
+                .thenAnswer(invocation -> new Fare(UUID.randomUUID(), invocation.getArgument(0), 1L, Fare.ESTIMATED,
+                        new BigDecimal("12"), 1, new BigDecimal("21.34"), "PEN"));
+        UUID paymentMethodId = UUID.randomUUID();
+        CreateBookingRequest request = request();
+        request.setPaymentMethodId(paymentMethodId);
 
-        BookingResponse response = service.createOnce(request(), PASSENGER_ID, null);
+        BookingResponse response = service.createOnce(request, PASSENGER_ID, null);
 
         assertEquals(BookingStatus.REQUESTED, response.status());
+        assertEquals(GROUP_ID, response.groupId());
+        assertEquals(REQUEST_ID, response.requestId());
+        assertEquals(0, new BigDecimal("21.34").compareTo(response.estimatedAmount()),
+                "the estimated fare is kept on the booking");
+        assertNull(response.boardingPin(), "a requested booking has no boarding codes yet");
         assertEquals(3, inventory.getAvailableSeats(), "one seat must be held");
 
         // booking_sagas: running, AUTHORIZE_PAYMENT, deadline now + 15 minutes
@@ -149,6 +169,10 @@ class BookingTransactionalServiceTest {
         assertEquals(LocalDate.of(2026, 10, 25), requested.date());
         assertEquals(new BigDecimal("12"), requested.distanceKm());
         assertEquals(1, requested.passengers());
+
+        // the payment authorization of the estimate is queued for Payments
+        verify(integrationOutbox).requestPaymentAuthorization(response.bookingId(), PASSENGER_ID, paymentMethodId,
+                new BigDecimal("21.34"), "PEN");
     }
 
     @Test
@@ -219,6 +243,8 @@ class BookingTransactionalServiceTest {
         BookingCancelled cancelled = (BookingCancelled) events.getValue();
         assertEquals(booking.getBookingId(), cancelled.bookingId());
         assertFalse(cancelled.penaltyApplicable());
+        assertEquals(CancellationReason.PASSENGER_CANCELLED, cancelled.reason());
+        verifyNoInteractions(integrationOutbox);   // the payment was never authorized
 
         verify(penaltyRepository, never()).save(any());
         verify(bookingRepository).save(booking);
@@ -251,6 +277,23 @@ class BookingTransactionalServiceTest {
         ArgumentCaptor<Object> events = ArgumentCaptor.forClass(Object.class);
         verify(eventPublisher).publish(events.capture());
         assertTrue(((BookingCancelled) events.getValue()).penaltyApplicable());
+    }
+
+    @Test
+    void cancellingABookingWithAnAuthorizedPaymentTellsPayments() {
+        Booking booking = requestedBooking();
+        booking.recordPaymentAuthorization(UUID.randomUUID(), LocalDateTime.of(2026, 10, 25, 11, 50));
+        SeatInventory inventory = SeatInventory.restore(GROUP_ID, 4, 3, 1L, null);
+        BookingSaga saga = BookingSaga.start(booking.getBookingId(), SagaStep.WAIT_GROUP,
+                LocalDateTime.of(2026, 10, 25, 13, 0));
+        cancellableBooking(booking, inventory, saga);
+        Instant departure = FIXED_CLOCK.instant().plus(java.time.Duration.ofMinutes(120));
+        when(departureTimeProvider.departureAt(GROUP_ID)).thenReturn(departure);
+
+        service.cancelOnce(booking.getBookingId(), PASSENGER_ID);
+
+        verify(integrationOutbox).bookingCancelled(booking.getBookingId(), CancellationReason.PASSENGER_CANCELLED,
+                FIXED_CLOCK.instant(), departure);
     }
 
     @Test

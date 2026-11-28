@@ -27,7 +27,8 @@ import jakarta.servlet.http.HttpServletRequest;
  * Single place where every exception becomes an HTTP answer. The contract:
  * 400 for a malformed or incomplete request, 404 for an unknown resource, 405/415 for
  * a wrong method or media type, 409 for a violated business rule or invalid state,
- * and 500 only for genuinely unexpected failures (which are logged with their stack trace).
+ * 503 for an integration event that must be sent again, and 500 only for genuinely
+ * unexpected failures (which are logged with their stack trace).
  * No business rule may reach the generic 500 handler.
  */
 @RestControllerAdvice
@@ -70,6 +71,12 @@ public class GlobalExceptionHandler {
             ObjectOptimisticLockingFailureException.class})
     public ResponseEntity<ErrorResponse> conflict(Exception exception, HttpServletRequest request) {
         return response(HttpStatus.CONFLICT, messageOr(exception, "Conflicting state"), request);
+    }
+
+    /** An integration event could not be processed now; the sender retries (503). */
+    @ExceptionHandler(EventProcessingException.class)
+    public ResponseEntity<ErrorResponse> serviceUnavailable(Exception exception, HttpServletRequest request) {
+        return response(HttpStatus.SERVICE_UNAVAILABLE, exception.getMessage(), request);
     }
 
     /** Genuinely unexpected failure (500): the details go to the log, never to the client. */

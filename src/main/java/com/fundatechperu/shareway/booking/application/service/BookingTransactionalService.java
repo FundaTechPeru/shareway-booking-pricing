@@ -3,10 +3,12 @@ package com.fundatechperu.shareway.booking.application.service;
 import com.fundatechperu.shareway.booking.application.dto.request.CreateBookingRequest;
 import com.fundatechperu.shareway.booking.application.dto.response.BookingResponse;
 import com.fundatechperu.shareway.booking.application.dto.response.CancellationResponse;
+import com.fundatechperu.shareway.booking.application.port.IntegrationOutbox;
 import com.fundatechperu.shareway.booking.domain.exception.*;
 import com.fundatechperu.shareway.booking.domain.model.Booking;
 import com.fundatechperu.shareway.booking.domain.model.BookingSaga;
 import com.fundatechperu.shareway.booking.domain.model.BookingStatus;
+import com.fundatechperu.shareway.booking.domain.model.CancellationReason;
 import com.fundatechperu.shareway.booking.domain.model.SagaStep;
 import com.fundatechperu.shareway.booking.domain.model.SeatInventory;
 import com.fundatechperu.shareway.booking.domain.repository.*;
@@ -18,7 +20,6 @@ import com.fundatechperu.shareway.booking.pricing.domain.model.Penalty;
 import com.fundatechperu.shareway.booking.pricing.domain.repository.FareRepository;
 import com.fundatechperu.shareway.booking.pricing.domain.repository.PenaltyRepository;
 import com.fundatechperu.shareway.booking.pricing.domain.service.GroupInfoProvider;
-import com.fundatechperu.shareway.booking.shared.events.BookingCancelled;
 import com.fundatechperu.shareway.booking.shared.events.EventPublisher;
 import com.fundatechperu.shareway.booking.shared.events.PaymentAuthorizationRequested;
 import com.fundatechperu.shareway.booking.shared.events.SeatHeld;
@@ -43,16 +44,18 @@ import java.util.UUID;
  *
  * 1. createOnce (POST /api/v1/bookings): idempotent replay returns the existing booking untouched;
  *    otherwise one seat is held (optimistic lock via seat_inventories.version), the booking
- *    is created in REQUESTED, the estimated fare is recorded, the saga starts (running /
- *    AUTHORIZE_PAYMENT / deadline +payment timeout) and SeatHeld plus
- *    PaymentAuthorizationRequested are published.
+ *    is created in REQUESTED, the estimated fare is recorded (and kept on the booking as the
+ *    amount to authorize), the saga starts (running / AUTHORIZE_PAYMENT / deadline +payment
+ *    timeout), SeatHeld plus PaymentAuthorizationRequested are published and the payment
+ *    authorization is queued in the outbox for Payments.
  *
- * 2. cancelOnce (POST /api/v1/bookings/{id}/cancel, Sprint 2): the owner cancels from requested,
+ * 2. cancelOnce (POST /api/v1/bookings/{id}/cancel): the owner cancels from requested,
  *    grouped or confirmed. Cancelling twice is a no-op 200; boarded, in_progress or
- *    completed answer 409. The seat is released, the booking becomes cancelled, the saga is
- *    compensated and BookingCancelled is published. A cancellation closer than the penalty
- *    window to the departure (DepartureTimeProvider) also creates the penalty: 20 % of the
- *    estimated fare with a 1.00 floor, reason LATE_CANCELLATION.
+ *    completed answer 409. The seat is released, the booking becomes cancelled
+ *    (PASSENGER_CANCELLED), the saga is compensated, BookingCancelled is published and, when
+ *    the payment was authorized, Payments is told through the outbox. A cancellation closer
+ *    than the penalty window to the departure (DepartureTimeProvider) also creates the
+ *    penalty: 20 % of the estimated fare with a 1.00 floor, reason LATE_CANCELLATION.
  */
 @Service
 public class BookingTransactionalService {
@@ -66,6 +69,8 @@ public class BookingTransactionalService {
     private final CancellationPolicy cancellationPolicy;
     private final DepartureTimeProvider departureTimeProvider;
     private final GroupInfoProvider groupInfoProvider;
+    private final BookingCancellationService cancellationService;
+    private final IntegrationOutbox integrationOutbox;
     private final EventPublisher eventPublisher;
     private final Clock clock;
     private final long paymentTimeoutMinutes;
@@ -80,6 +85,8 @@ public class BookingTransactionalService {
                                        CancellationPolicy cancellationPolicy,
                                        DepartureTimeProvider departureTimeProvider,
                                        GroupInfoProvider groupInfoProvider,
+                                       BookingCancellationService cancellationService,
+                                       IntegrationOutbox integrationOutbox,
                                        EventPublisher eventPublisher,
                                        Clock clock,
                                        @Value("${booking.saga.payment-timeout-minutes:15}") long paymentTimeoutMinutes,
@@ -93,6 +100,8 @@ public class BookingTransactionalService {
         this.cancellationPolicy = cancellationPolicy;
         this.departureTimeProvider = departureTimeProvider;
         this.groupInfoProvider = groupInfoProvider;
+        this.cancellationService = cancellationService;
+        this.integrationOutbox = integrationOutbox;
         this.eventPublisher = eventPublisher;
         this.clock = clock;
         this.paymentTimeoutMinutes = paymentTimeoutMinutes;
@@ -103,7 +112,7 @@ public class BookingTransactionalService {
     public BookingResponse createOnce(CreateBookingRequest request, UUID passengerId, String idempotencyKey) {
         if (idempotencyKey != null) {
             Optional<Booking> replay = bookingRepository.findByIdempotencyKey(idempotencyKey);
-            if (replay.isPresent()) return BookingResponse.from(replay.get());
+            if (replay.isPresent()) return BookingResponse.forOwner(replay.get());
         }
 
         UUID requestId = request.getRequestId();
@@ -130,19 +139,23 @@ public class BookingTransactionalService {
         LocalDate today = LocalDate.now(clock);
         BigDecimal distanceKm = groupInfoProvider.distanceKm(groupId);
         int groupedPassengers = Math.max(1, inventory.getCapacity() - inventory.getAvailableSeats());
-        fareService.recordFare(booking.getBookingId(), Fare.ESTIMATED, today, distanceKm, groupedPassengers);
+        Fare estimated = fareService.recordFare(booking.getBookingId(), Fare.ESTIMATED, today, distanceKm,
+                groupedPassengers);
+        booking.assignEstimate(estimated.amount(), estimated.currency());
+        booking = bookingRepository.save(booking);
 
         eventPublisher.publish(new SeatHeld(UUID.randomUUID(), clock.instant(),
                 booking.getBookingId(), groupId, passengerId));
         eventPublisher.publish(new PaymentAuthorizationRequested(UUID.randomUUID(), clock.instant(),
                 booking.getBookingId(), groupId, passengerId, today, distanceKm, groupedPassengers));
+        integrationOutbox.requestPaymentAuthorization(booking.getBookingId(), passengerId,
+                request.getPaymentMethodId(), estimated.amount(), estimated.currency());
 
-        return BookingResponse.from(booking);
+        return BookingResponse.forOwner(booking);
     }
 
     /**
-     * Cancels one booking on behalf of its passenger (the X-User-Id delivered by the API
-     * Gateway). Already cancelled bookings answer 200 without touching the seat a second
+     * Cancels one booking on behalf of its passenger (the subject of the JWT). Already cancelled bookings answer 200 without touching the seat a second
      * time; boarded, in_progress or completed bookings are rejected with a 409 message.
      */
     @Transactional
@@ -165,23 +178,9 @@ public class BookingTransactionalService {
 
         BigDecimal penaltyAmount = createLateCancellationPenaltyIfAny(booking);
 
-        booking.cancel();
-        bookingRepository.save(booking);
-
-        SeatInventory inventory = seatInventoryRepository.findByIdForUpdate(booking.getGroupId())
-                .orElseThrow(() -> new GroupNotFoundException(booking.getGroupId()));
-        inventory.releaseSeat();                        // available_seats + 1, never above capacity
-        seatInventoryRepository.save(inventory);
-
-        bookingSagaRepository.findByBookingId(bookingId).ifPresent(saga -> {
-            if (saga.getStatus() != BookingSaga.Status.COMPENSATED) {
-                saga.compensate();
-                bookingSagaRepository.save(saga);
-            }
-        });
-
-        eventPublisher.publish(new BookingCancelled(UUID.randomUUID(), clock.instant(),
-                bookingId, booking.getGroupId(), booking.getPassengerId(), penaltyAmount != null));
+        // booking -> cancelled, seat released (never above capacity), saga compensated
+        cancellationService.cancel(booking, CancellationReason.PASSENGER_CANCELLED);
+        cancellationService.notifyCancelled(booking, penaltyAmount != null);
 
         return new CancellationResponse(bookingId, BookingStatus.CANCELLED, penaltyAmount,
                 penaltyAmount == null ? null : fareOf(bookingId).map(Fare::currency).orElse(null));

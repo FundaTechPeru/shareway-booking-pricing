@@ -22,4 +22,10 @@ public interface BookingRepository {
 
     /** Bookings of a trip group in any status but the given one (RouteUpdated skips cancelled). */
     List<Booking> findByGroupIdAndStatusNot(UUID groupId, BookingStatus status);
+
+    /** Bookings of one passenger, newest first (GET /api/v1/bookings for a PASSENGER). */
+    List<Booking> findByPassengerId(UUID passengerId);
+
+    /** Every booking, newest first (GET /api/v1/bookings for an ADMIN). */
+    List<Booking> findAll();
 }

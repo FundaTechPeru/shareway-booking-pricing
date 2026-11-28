@@ -1,5 +1,6 @@
 package com.fundatechperu.shareway.booking.interfaces;
 
+import com.fundatechperu.shareway.booking.infrastructure.OpenApiConfiguration;
 import com.fundatechperu.shareway.booking.infrastructure.web.ErrorResponse;
 import com.fundatechperu.shareway.booking.pricing.application.dto.response.FareRuleResponse;
 import com.fundatechperu.shareway.booking.pricing.application.service.FareRuleService;
@@ -10,6 +11,7 @@ import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,9 +23,10 @@ import java.util.List;
 
 /**
  * Read-only access to the fare-rule catalogue. The contract of the report exposes only GET:
- * rules are seeded by Flyway (V2) and are not created or modified through this API.
+ * rules are seeded by Flyway (V3 baseline) and are not created or modified through this API.
  */
 @RestController
+@SecurityRequirement(name = OpenApiConfiguration.BEARER_SCHEME)
 @RequestMapping("/api/v1/fare-rules")
 @Tag(name = "Fare Rules", description = "Fare-rule catalogue used to price trips. Read-only: GET only.")
 public class FareRuleController {

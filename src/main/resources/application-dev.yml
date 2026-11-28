@@ -19,3 +19,14 @@ spring:
 
 server:
   port: "${SERVER_PORT:8080}"
+
+# Development example secret shared with Driver Management, Trip Planning and Payments; it is
+# rejected outside the dev, test and local profiles. INTERNAL_API_KEY falls back in code to the
+# shared development key in this profile.
+app:
+  jwt:
+    secret: "${JWT_SECRET:dev-only-shareway-driver-management-secret-change-me}"
+  # Locally the outbox is kept and NOT sent to the Render services; set OUTBOX_RELAY_ENABLED=true
+  # to send it.
+  outbox:
+    relay-enabled: "${OUTBOX_RELAY_ENABLED:false}"
